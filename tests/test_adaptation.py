@@ -42,3 +42,38 @@ def test_color_temp_kelvin_included_when_supported() -> None:
         "color_temp_kelvin": 4250,
         "transition": 1.0,
     }
+
+
+def test_factor_endpoints_map_to_configured_min_and_max() -> None:
+    """0.0 -> min, 1.0 -> max for both brightness and color temp."""
+    at_min = compute_turn_on_kwargs(
+        supported_color_modes={"color_temp"},
+        brightness_factor=0.0,
+        color_factor=0.0,
+        min_brightness_pct=20,
+        max_brightness_pct=80,
+        min_color_temp_kelvin=2000,
+        max_color_temp_kelvin=6500,
+        transition=0.0,
+    )
+    at_max = compute_turn_on_kwargs(
+        supported_color_modes={"color_temp"},
+        brightness_factor=1.0,
+        color_factor=1.0,
+        min_brightness_pct=20,
+        max_brightness_pct=80,
+        min_color_temp_kelvin=2000,
+        max_color_temp_kelvin=6500,
+        transition=0.0,
+    )
+
+    assert at_min == {
+        "brightness_pct": 20,
+        "color_temp_kelvin": 2000,
+        "transition": 0.0,
+    }
+    assert at_max == {
+        "brightness_pct": 80,
+        "color_temp_kelvin": 6500,
+        "transition": 0.0,
+    }
