@@ -1,0 +1,9 @@
+[project]
+name = "daylight"
+version = "0.1.0"
+description = "Per-target adaptive lighting for Home Assistant"
+requires-python = ">=3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

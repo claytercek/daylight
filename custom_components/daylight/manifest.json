@@ -1,0 +1,12 @@
+{
+  "domain": "daylight",
+  "name": "Daylight",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["light"],
+  "documentation": "https://github.com/REPLACE_ME/daylight",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/REPLACE_ME/daylight/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
