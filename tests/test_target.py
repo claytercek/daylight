@@ -69,6 +69,20 @@ def test_late_report_with_fresh_context_is_suppressed_during_transition() -> Non
     assert target.observe_state_change(LIGHT, "C2", timestamp=6.5) is False
 
 
+def test_a_short_command_does_not_retract_a_long_transitions_window() -> None:
+    """Brightness and colour go out as separate commands, seconds apart.
+
+    A 45s brightness fade at t=0 opens a window to t=47; an instant colour
+    command at t=2 must not shrink it back to t=4, or the fade's own final
+    report at t=40 would look like a human.
+    """
+    target = _target()
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 45.0, now=0.0)
+    target.record_command(LIGHT, "C2", {"color_temp_kelvin": 3000}, 0.0, now=2.0)
+
+    assert target.observe_state_change(LIGHT, "C3", timestamp=40.0) is False
+
+
 def test_unknown_context_after_the_window_closes_is_manual() -> None:
     """Same command, but the report arrives at t=20 -- long past 5s + 2s."""
     target = _target()

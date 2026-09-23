@@ -123,7 +123,12 @@ class Target:
         state = self._state(entity_id)
         state.last_commanded = dict(attrs)
         state.own_context_ids.append(context_id)
-        state.suppress_until = now + transition_seconds + SUPPRESSION_GRACE_SECONDS
+        # Extend, never retract: a short command issued while a long fade is
+        # still running must not expose the fade's own final report.
+        state.suppress_until = max(
+            state.suppress_until,
+            now + transition_seconds + SUPPRESSION_GRACE_SECONDS,
+        )
 
     def observe_state_change(
         self, entity_id: str, context_id: str, *, timestamp: float
