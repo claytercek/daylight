@@ -285,13 +285,20 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             transition=self._settings.transition,
         )
         context = Context()
+        # A split send issues its second part `send_split_delay` late, so that
+        # part's own post-transition report lands that much later too. Added
+        # unconditionally rather than only when there really are two parts:
+        # over-suppressing a single-kwarg command by a few seconds is harmless.
+        transition_seconds = self._settings.transition
+        if self._settings.separate_turn_on_commands:
+            transition_seconds += self._settings.send_split_delay
         # Strictly before the service call, and synchronously, so the
         # resulting state report can never race this bookkeeping.
         self._target.record_command(
             entity_id,
             context.id,
             kwargs,
-            transition_seconds=self._settings.transition,
+            transition_seconds=transition_seconds,
             now=now,
         )
         self.hass.async_create_task(self._async_send(entity_id, kwargs, context))

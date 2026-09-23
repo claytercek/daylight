@@ -660,6 +660,40 @@ async def test_separate_turn_on_commands_send_one_call_without_colour(
     ]
 
 
+async def test_the_suppression_window_covers_the_split_send_delay(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """Fix: the second split part reports back `send_split_delay` late.
+
+    A single-kwarg stub keeps `_async_send` from actually sleeping, but the
+    suppression window must be sized for the worst case regardless -- with a
+    5s delay and target.py's 2s grace, a 4s transition reports at +9s, well
+    past the +6s window the transition alone would have bought.
+    """
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(separate_turn_on_commands=True, send_split_delay=5.0)],
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value={"brightness_pct": 62, "transition": 4.0},
+    ):
+        await _turn_switch_on(hass)
+        calls.clear()
+        await _tick(hass, entry)
+        assert len(calls) == 1
+
+        freezer.tick(datetime.timedelta(seconds=9))
+        _set_light(hass, context=Context(), brightness=255)
+        await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
+
+
 def _set_light_unavailable(hass, entity_id=KITCHEN_LIGHT):
     """Drop a member off the network, as a Zigbee/Hue reconnect blip would."""
     hass.states.async_set(entity_id, "unavailable", {}, context=Context())
