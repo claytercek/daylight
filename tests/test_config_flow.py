@@ -8,7 +8,7 @@ through `hass.config_entries`, which uses HA's loader-based discovery.
 
 from unittest.mock import patch
 
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, section
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight.config_flow import (
@@ -17,7 +17,21 @@ from custom_components.daylight.config_flow import (
 )
 from custom_components.daylight.const import DOMAIN
 
+# The section-shaped dict a real target form submission produces...
 _TARGET_INPUT = {
+    "entities": ["light.kitchen", "light.den"],
+    "brightness": {"min_brightness_pct": 10, "max_brightness_pct": 100},
+    "color_temp": {"min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6500},
+    "advanced": {
+        "transition": 30.0,
+        "adapt_only_on_state_change": True,
+        "manual_control_reset_minutes": 15,
+        "separate_turn_on_commands": False,
+        "send_split_delay": 0.5,
+    },
+}
+# ...and the flat dict it is stored as, which `switch.py` reads directly.
+_TARGET_DATA = {
     "entities": ["light.kitchen", "light.den"],
     "min_brightness_pct": 10,
     "max_brightness_pct": 100,
@@ -227,10 +241,14 @@ async def test_target_add_step_applies_manual_control_reset_default(
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, "target"), context={"source": "user"}
     )
-    input_without_reset_minutes = {
+    advanced_without_reset_minutes = {
         key: value
-        for key, value in _TARGET_INPUT.items()
+        for key, value in _TARGET_INPUT["advanced"].items()
         if key != "manual_control_reset_minutes"
+    }
+    input_without_reset_minutes = {
+        **_TARGET_INPUT,
+        "advanced": advanced_without_reset_minutes,
     }
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=input_without_reset_minutes
@@ -267,7 +285,7 @@ async def test_target_add_step_shows_form(
 async def test_target_add_step_submit_creates_subentry(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
-    """Given the full target input, the subentry's `data` is the literal dict."""
+    """The section-shaped submission is stored as one flat dict."""
     hass.config.config_dir = hass_config_dir
     entry = MockConfigEntry(domain=DOMAIN, data={})
     entry.add_to_hass(hass)
@@ -282,7 +300,7 @@ async def test_target_add_step_submit_creates_subentry(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     subentries = list(entry.subentries.values())
     assert len(subentries) == 1
-    assert subentries[0].data == _TARGET_INPUT
+    assert subentries[0].data == _TARGET_DATA
 
 
 async def test_target_add_step_rejects_inverted_brightness_range(
@@ -295,7 +313,10 @@ async def test_target_add_step_rejects_inverted_brightness_range(
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, "target"), context={"source": "user"}
     )
-    bad_input = {**_TARGET_INPUT, "min_brightness_pct": 90, "max_brightness_pct": 10}
+    bad_input = {
+        **_TARGET_INPUT,
+        "brightness": {"min_brightness_pct": 90, "max_brightness_pct": 10},
+    }
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=bad_input
     )
@@ -318,8 +339,10 @@ async def test_target_add_step_rejects_inverted_color_temp_range(
     )
     bad_input = {
         **_TARGET_INPUT,
-        "min_color_temp_kelvin": 6500,
-        "max_color_temp_kelvin": 2000,
+        "color_temp": {
+            "min_color_temp_kelvin": 6500,
+            "max_color_temp_kelvin": 2000,
+        },
     }
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=bad_input
@@ -340,7 +363,7 @@ async def test_target_reconfigure_replaces_subentry_data(
         data={},
         subentries_data=[
             {
-                "data": _TARGET_INPUT,
+                "data": _TARGET_DATA,
                 "subentry_type": "target",
                 "title": "light.kitchen, light.den",
                 "unique_id": None,
@@ -354,14 +377,86 @@ async def test_target_reconfigure_replaces_subentry_data(
         (entry.entry_id, "target"),
         context={"source": "reconfigure", "subentry_id": subentry_id},
     )
-    new_input = {**_TARGET_INPUT, "transition": 5.0}
+    new_input = {
+        **_TARGET_INPUT,
+        "advanced": {**_TARGET_INPUT["advanced"], "transition": 5.0},
+    }
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=new_input
     )
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert entry.subentries[subentry_id].data == new_input
+    assert entry.subentries[subentry_id].data == {**_TARGET_DATA, "transition": 5.0}
+
+
+def _suggested_values(schema) -> dict:
+    """Read back the suggested value a shown form carries for every field."""
+    values = {}
+    for key, value in schema.schema.items():
+        if isinstance(value, section):
+            values[str(key)] = _suggested_values(value.schema)
+        else:
+            values[str(key)] = (key.description or {}).get("suggested_value")
+    return values
+
+
+async def test_target_reconfigure_form_shows_the_stored_values(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Stored (flat) values have to be re-nested to repopulate the sections.
+
+    `add_suggested_values_to_schema` only descends into a section when the
+    suggested values are nested under that section's name, so handing it the
+    flat stored data would leave every sectioned field blank.
+    """
+    hass.config.config_dir = hass_config_dir
+    stored = {
+        **_TARGET_DATA,
+        "min_brightness_pct": 7,
+        "max_brightness_pct": 83,
+        "min_color_temp_kelvin": 2222,
+        "max_color_temp_kelvin": 5555,
+        "transition": 12.5,
+        "manual_control_reset_minutes": 42,
+        "send_split_delay": 0.25,
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": stored,
+                "subentry_type": "target",
+                "title": "light.kitchen, light.den",
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert _suggested_values(result["data_schema"]) == {
+        "entities": ["light.kitchen", "light.den"],
+        "brightness": {"min_brightness_pct": 7, "max_brightness_pct": 83},
+        "color_temp": {
+            "min_color_temp_kelvin": 2222,
+            "max_color_temp_kelvin": 5555,
+        },
+        "advanced": {
+            "transition": 12.5,
+            "adapt_only_on_state_change": True,
+            "manual_control_reset_minutes": 42,
+            "separate_turn_on_commands": False,
+            "send_split_delay": 0.25,
+        },
+    }
 
 
 async def test_target_reconfigure_retitles_the_subentry_from_its_entities(
@@ -374,7 +469,7 @@ async def test_target_reconfigure_retitles_the_subentry_from_its_entities(
         data={},
         subentries_data=[
             {
-                "data": _TARGET_INPUT,
+                "data": _TARGET_DATA,
                 "subentry_type": "target",
                 "title": "light.kitchen, light.den",
                 "unique_id": None,

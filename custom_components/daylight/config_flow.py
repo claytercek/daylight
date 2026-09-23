@@ -254,44 +254,74 @@ CONF_MANUAL_CONTROL_RESET_MINUTES = "manual_control_reset_minutes"
 CONF_SEPARATE_TURN_ON_COMMANDS = "separate_turn_on_commands"
 CONF_SEND_SPLIT_DELAY = "send_split_delay"
 
+SECTION_BRIGHTNESS = "brightness"
+SECTION_COLOR_TEMP = "color_temp"
+SECTION_ADVANCED = "advanced"
+
 _DEFAULT_MANUAL_CONTROL_RESET_MINUTES = 0
 
+# Unlike the hub's, every target section holds at least one required field, so
+# the section markers are required too: an absent section is a validation
+# error rather than something that can resolve to defaults.
 TARGET_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_ENTITIES): EntitySelector(
             EntitySelectorConfig(domain="light", multiple=True)
         ),
-        vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
-            NumberSelector(
-                NumberSelectorConfig(
-                    min=1, max=100, mode=NumberSelectorMode.BOX
-                )
+        vol.Required(SECTION_BRIGHTNESS): section(
+            vol.Schema(
+                {
+                    vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
+                        NumberSelector(
+                            NumberSelectorConfig(
+                                min=1, max=100, mode=NumberSelectorMode.BOX
+                            )
+                        ),
+                        vol.Coerce(int),
+                    ),
+                    vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
+                        NumberSelector(
+                            NumberSelectorConfig(
+                                min=1, max=100, mode=NumberSelectorMode.BOX
+                            )
+                        ),
+                        vol.Coerce(int),
+                    ),
+                }
+            )
+        ),
+        vol.Required(SECTION_COLOR_TEMP): section(
+            vol.Schema(
+                {
+                    vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): _int_box(),
+                    vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): _int_box(),
+                }
+            )
+        ),
+        vol.Required(SECTION_ADVANCED): section(
+            vol.Schema(
+                {
+                    vol.Required(CONF_TRANSITION): vol.All(
+                        NumberSelector(
+                            NumberSelectorConfig(mode=NumberSelectorMode.BOX)
+                        ),
+                        vol.Coerce(float),
+                    ),
+                    vol.Required(CONF_ADAPT_ONLY_ON_STATE_CHANGE): bool,
+                    vol.Optional(
+                        CONF_MANUAL_CONTROL_RESET_MINUTES,
+                        default=_DEFAULT_MANUAL_CONTROL_RESET_MINUTES,
+                    ): _int_box(),
+                    vol.Required(CONF_SEPARATE_TURN_ON_COMMANDS): bool,
+                    vol.Required(CONF_SEND_SPLIT_DELAY): vol.All(
+                        NumberSelector(
+                            NumberSelectorConfig(mode=NumberSelectorMode.BOX)
+                        ),
+                        vol.Coerce(float),
+                    ),
+                }
             ),
-            vol.Coerce(int),
-        ),
-        vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
-            NumberSelector(
-                NumberSelectorConfig(
-                    min=1, max=100, mode=NumberSelectorMode.BOX
-                )
-            ),
-            vol.Coerce(int),
-        ),
-        vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): _int_box(),
-        vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): _int_box(),
-        vol.Required(CONF_TRANSITION): vol.All(
-            NumberSelector(NumberSelectorConfig(mode=NumberSelectorMode.BOX)),
-            vol.Coerce(float),
-        ),
-        vol.Required(CONF_ADAPT_ONLY_ON_STATE_CHANGE): bool,
-        vol.Optional(
-            CONF_MANUAL_CONTROL_RESET_MINUTES,
-            default=_DEFAULT_MANUAL_CONTROL_RESET_MINUTES,
-        ): _int_box(),
-        vol.Required(CONF_SEPARATE_TURN_ON_COMMANDS): bool,
-        vol.Required(CONF_SEND_SPLIT_DELAY): vol.All(
-            NumberSelector(NumberSelectorConfig(mode=NumberSelectorMode.BOX)),
-            vol.Coerce(float),
+            {"collapsed": True},
         ),
     }
 )
@@ -318,7 +348,9 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Reconfigure an existing target subentry."""
-        self.options = self._get_reconfigure_subentry().data.copy()
+        self.options = _nest_sections(
+            TARGET_SCHEMA, self._get_reconfigure_subentry().data
+        )
         return await self.async_step_init()
 
     async def async_step_init(
@@ -328,28 +360,31 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            brightness = user_input[SECTION_BRIGHTNESS]
+            color_temp = user_input[SECTION_COLOR_TEMP]
             if (
-                user_input[CONF_MIN_BRIGHTNESS_PCT]
-                > user_input[CONF_MAX_BRIGHTNESS_PCT]
+                brightness[CONF_MIN_BRIGHTNESS_PCT]
+                > brightness[CONF_MAX_BRIGHTNESS_PCT]
             ):
                 errors["base"] = "brightness_range_invalid"
             elif (
-                user_input[CONF_MIN_COLOR_TEMP_KELVIN]
-                > user_input[CONF_MAX_COLOR_TEMP_KELVIN]
+                color_temp[CONF_MIN_COLOR_TEMP_KELVIN]
+                > color_temp[CONF_MAX_COLOR_TEMP_KELVIN]
             ):
                 errors["base"] = "color_temp_range_invalid"
 
             if not errors:
+                data = _flatten_sections(TARGET_SCHEMA, user_input)
                 if self._is_new:
                     return self.async_create_entry(
                         title=", ".join(user_input[CONF_ENTITIES]),
-                        data=user_input,
+                        data=data,
                     )
                 return self.async_update_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
                     title=", ".join(user_input[CONF_ENTITIES]),
-                    data=user_input,
+                    data=data,
                 )
 
         return self.async_show_form(

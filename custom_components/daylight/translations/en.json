@@ -73,28 +73,51 @@
       "step": {
         "init": {
           "data": {
-            "entities": "Entities",
-            "min_brightness_pct": "Minimum Brightness Percent",
-            "max_brightness_pct": "Maximum Brightness Percent",
-            "min_color_temp_kelvin": "Minimum Color Temperature Kelvin",
-            "max_color_temp_kelvin": "Maximum Color Temperature Kelvin",
-            "transition": "Transition",
-            "adapt_only_on_state_change": "Adapt Only On State Change",
-            "manual_control_reset_minutes": "Manual Control Reset Minutes",
-            "separate_turn_on_commands": "Separate Turn-On Commands",
-            "send_split_delay": "Send Split Delay"
+            "entities": "Entities"
           },
           "data_description": {
-            "entities": "Light entities this target adapts.",
-            "min_brightness_pct": "Lowest brightness percent the curve will output.",
-            "max_brightness_pct": "Highest brightness percent the curve will output.",
-            "min_color_temp_kelvin": "Warmest color temperature the curve will output.",
-            "max_color_temp_kelvin": "Coolest color temperature the curve will output.",
-            "transition": "Transition duration, in seconds, sent with each light command.",
-            "adapt_only_on_state_change": "Only adapt when a light changes state, instead of on every update.",
-            "manual_control_reset_minutes": "Minutes of no manual changes before adaptation resumes automatically.",
-            "separate_turn_on_commands": "Send a separate command to turn a light on before adapting it.",
-            "send_split_delay": "Delay, in seconds, between the turn-on command and the adaptation command."
+            "entities": "Light entities this target adapts."
+          },
+          "sections": {
+            "brightness": {
+              "name": "Brightness",
+              "data": {
+                "min_brightness_pct": "Minimum Brightness Percent",
+                "max_brightness_pct": "Maximum Brightness Percent"
+              },
+              "data_description": {
+                "min_brightness_pct": "Lowest brightness percent the curve will output.",
+                "max_brightness_pct": "Highest brightness percent the curve will output."
+              }
+            },
+            "color_temp": {
+              "name": "Color Temperature",
+              "data": {
+                "min_color_temp_kelvin": "Minimum Color Temperature Kelvin",
+                "max_color_temp_kelvin": "Maximum Color Temperature Kelvin"
+              },
+              "data_description": {
+                "min_color_temp_kelvin": "Warmest color temperature the curve will output.",
+                "max_color_temp_kelvin": "Coolest color temperature the curve will output."
+              }
+            },
+            "advanced": {
+              "name": "Advanced",
+              "data": {
+                "transition": "Transition",
+                "adapt_only_on_state_change": "Adapt Only On State Change",
+                "manual_control_reset_minutes": "Manual Control Reset Minutes",
+                "separate_turn_on_commands": "Separate Turn-On Commands",
+                "send_split_delay": "Send Split Delay"
+              },
+              "data_description": {
+                "transition": "Transition duration, in seconds, sent with each light command.",
+                "adapt_only_on_state_change": "Only adapt when a light changes state, instead of on every update.",
+                "manual_control_reset_minutes": "Minutes of no manual changes before adaptation resumes automatically.",
+                "separate_turn_on_commands": "Send a separate command to turn a light on before adapting it.",
+                "send_split_delay": "Delay, in seconds, between the turn-on command and the adaptation command."
+              }
+            }
           }
         }
       }
