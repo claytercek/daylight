@@ -202,3 +202,27 @@ async def test_async_update_data_computes_fresh_state_from_dt_util_utcnow(
 
     assert data.utc_now == dt
     assert data == coordinator.compute_day_state(dt)
+
+
+async def test_first_refresh_populates_data(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`coordinator.data` is None before any refresh; a refresh fills it in
+    via the same `_async_update_data` -> `compute_day_state` poll path.
+
+    (Not `async_config_entry_first_refresh`: that requires a config entry,
+    which is out of scope here -- wiring a `DayCoordinator` to a config entry
+    belongs to a different module.)
+    """
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 21, 9, 30, tzinfo=UTC)
+    monkeypatch.setattr(
+        "custom_components.daylight.coordinator.dt_util.utcnow", lambda: dt
+    )
+    assert coordinator.data is None
+
+    await coordinator.async_refresh()
+
+    assert coordinator.last_update_success is True
+    assert coordinator.data == coordinator.compute_day_state(dt)
