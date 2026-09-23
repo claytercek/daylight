@@ -27,3 +27,27 @@ def test_state_change_with_own_context_is_not_manual() -> None:
 
     assert flagged is False
     assert target.is_manual(LIGHT, now=1.0) is False
+
+
+def test_own_context_is_registered_the_instant_record_command_returns() -> None:
+    """The bookkeeping lands before the caller issues `light.turn_on`.
+
+    A state report that races the service call -- same instant, no elapsed
+    time -- must already be recognised as ours.
+    """
+    target = _target()
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=0.0)
+
+    assert target.observe_state_change(LIGHT, "C1", timestamp=0.0) is False
+
+
+def test_own_context_is_recognised_on_the_commanded_entity_only() -> None:
+    """Context ids are tracked per entity, not globally.
+
+    Kitchen was commanded with C1; the den was never commanded, so a C1-looking
+    report on the den is somebody else's business and counts as manual.
+    """
+    target = _target()
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=0.0)
+
+    assert target.observe_state_change("light.den", "C1", timestamp=100.0) is True

@@ -88,9 +88,7 @@ class Target:
     ) -> bool:
         """Feed in a state change; return whether it was flagged as manual."""
         state = self._state(entity_id)
-        if context_id in state.own_context_ids:
-            return False
-        return False
+        return context_id not in state.own_context_ids
 
     def is_manual(self, entity_id: str, *, now: float) -> bool:
         """Whether `entity_id` is currently considered manually controlled."""
