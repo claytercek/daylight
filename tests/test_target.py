@@ -128,3 +128,32 @@ def test_detection_resumes_after_an_auto_clear() -> None:
 
     assert target.observe_state_change(LIGHT, "C1", timestamp=1100.5) is False
     assert target.is_manual(LIGHT, now=1101.0) is False
+
+
+def test_clear_manual_flag_releases_one_entity() -> None:
+    target = _target()
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=10.0)
+    target.observe_state_change("light.den", "HUMAN", timestamp=10.0)
+
+    target.clear_manual_flag(LIGHT)
+
+    assert target.is_manual(LIGHT, now=11.0) is False
+    assert target.is_manual("light.den", now=11.0) is True
+
+
+def test_movie_night_off_to_on_releases_every_entity() -> None:
+    """Movie night: both lights hand-dimmed, then the switch is cycled.
+
+    The future off->on handler calls `clear_all_manual_flags`, after which
+    detection starts over from scratch -- a fresh hand-dim flags again.
+    """
+    target = _target()
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=10.0)
+    target.observe_state_change("light.den", "HUMAN", timestamp=12.0)
+
+    target.clear_all_manual_flags()
+
+    assert target.is_manual(LIGHT, now=20.0) is False
+    assert target.is_manual("light.den", now=20.0) is False
+    assert target.observe_state_change(LIGHT, "HUMAN2", timestamp=30.0) is True
+    assert target.is_manual(LIGHT, now=31.0) is True

@@ -130,3 +130,11 @@ class Target:
             return
         state.manual = False
         state.manual_since = None
+
+    def clear_all_manual_flags(self) -> None:
+        """Hand every member back to adaptive control.
+
+        The switch entity's off->on transition handler calls this.
+        """
+        for entity_id in self._entities:
+            self.clear_manual_flag(entity_id)
