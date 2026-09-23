@@ -12,9 +12,30 @@ import datetime
 
 import astral
 
-from custom_components.daylight.coordinator import DayState
+from custom_components.daylight.color_and_brightness import CurveSettings
+from custom_components.daylight.coordinator import DayCoordinator, DayState
 
 UTC = datetime.timezone.utc
+
+# NYC, matching test_color_and_brightness.py's ground-truth observer.
+_NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)
+
+
+def _curve_settings(**overrides: object) -> CurveSettings:
+    defaults: dict[str, object] = dict(
+        name="test",
+        astral_observer=_NYC_OBSERVER,
+        sunrise_time=None,
+        min_sunrise_time=None,
+        max_sunrise_time=None,
+        sunset_time=None,
+        min_sunset_time=None,
+        max_sunset_time=None,
+        brightness_mode_time_dark=datetime.timedelta(minutes=45),
+        brightness_mode_time_light=datetime.timedelta(minutes=45),
+    )
+    defaults.update(overrides)
+    return CurveSettings(**defaults)
 
 
 def test_day_state_equality_ignores_utc_now() -> None:
@@ -45,3 +66,21 @@ def test_day_state_inequality_on_other_field() -> None:
     a = DayState(sun_position=0.5, **kwargs)
     b = DayState(sun_position=0.6, **kwargs)
     assert a != b
+
+
+async def test_default_update_interval_is_90_seconds(hass) -> None:
+    coordinator = DayCoordinator(hass, _curve_settings())
+    assert coordinator.update_interval == datetime.timedelta(seconds=90)
+
+
+async def test_update_interval_is_overridable(hass) -> None:
+    coordinator = DayCoordinator(
+        hass, _curve_settings(), update_interval=datetime.timedelta(seconds=30)
+    )
+    assert coordinator.update_interval == datetime.timedelta(seconds=30)
+
+
+async def test_curve_settings_is_stored(hass) -> None:
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    assert coordinator.curve_settings is settings
