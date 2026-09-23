@@ -34,6 +34,14 @@ from typing import Any
 # plenty; the bound is what stops the buffer growing over a long session.
 OWN_CONTEXT_MAXLEN = 16
 
+# Seconds added on top of a command's `transition` before state reports stop
+# counting as ours. HA only propagates our context onto state changes for
+# `CONTEXT_RECENT_TIME_SECONDS` (5, see homeassistant/helpers/entity.py), so a
+# post-transition report from a slow Zigbee light carries a *fresh* context and
+# would otherwise look manual. Deliberate, adjustable constant -- there is no
+# principled value, just enough slack for reporting lag.
+SUPPRESSION_GRACE_SECONDS = 2.0
+
 
 @dataclass(frozen=True)
 class TargetConfig:
@@ -50,6 +58,7 @@ class _EntityState:
     own_context_ids: deque[str] = field(
         default_factory=lambda: deque(maxlen=OWN_CONTEXT_MAXLEN)
     )
+    suppress_until: float = 0.0
 
 
 class Target:
@@ -82,13 +91,16 @@ class Target:
         state = self._state(entity_id)
         state.last_commanded = dict(attrs)
         state.own_context_ids.append(context_id)
+        state.suppress_until = now + transition_seconds + SUPPRESSION_GRACE_SECONDS
 
     def observe_state_change(
         self, entity_id: str, context_id: str, *, timestamp: float
     ) -> bool:
         """Feed in a state change; return whether it was flagged as manual."""
         state = self._state(entity_id)
-        return context_id not in state.own_context_ids
+        if context_id in state.own_context_ids or timestamp <= state.suppress_until:
+            return False
+        return True
 
     def is_manual(self, entity_id: str, *, now: float) -> bool:
         """Whether `entity_id` is currently considered manually controlled."""

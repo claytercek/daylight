@@ -51,3 +51,25 @@ def test_own_context_is_recognised_on_the_commanded_entity_only() -> None:
     target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=0.0)
 
     assert target.observe_state_change("light.den", "C1", timestamp=100.0) is True
+
+
+def test_late_report_with_fresh_context_is_suppressed_during_transition() -> None:
+    """A slow light echoes our command back with a context of its own.
+
+    Command at t=0 with a 5s transition. HA only propagates our context onto
+    state changes for 5s, so the post-transition report at t=6.5 carries a
+    fresh context id -- but it is still within transition (5s) + grace (2s),
+    so it is ours, not a human's.
+    """
+    target = _target()
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+
+    assert target.observe_state_change(LIGHT, "C2", timestamp=6.5) is False
+
+
+def test_unknown_context_after_the_window_closes_is_manual() -> None:
+    """Same command, but the report arrives at t=20 -- long past 5s + 2s."""
+    target = _target()
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+
+    assert target.observe_state_change(LIGHT, "C3", timestamp=20.0) is True
