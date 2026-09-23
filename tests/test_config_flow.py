@@ -259,6 +259,38 @@ async def test_target_add_step_applies_manual_control_reset_default(
     assert subentry.data["manual_control_reset_minutes"] == 0
 
 
+async def test_target_add_step_applies_defaults_of_an_absent_advanced_section(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """The Advanced section is collapsed by default, so it must be skippable.
+
+    `switch.py` reads every one of its keys unconditionally, so a target
+    created without ever expanding Advanced must not leave holes in the
+    stored data.
+    """
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    input_without_advanced = {
+        key: value for key, value in _TARGET_INPUT.items() if key != "advanced"
+    }
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=input_without_advanced
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    assert subentry.data["transition"] == 0.0
+    assert subentry.data["adapt_only_on_state_change"] is False
+    assert subentry.data["manual_control_reset_minutes"] == 0
+    assert subentry.data["separate_turn_on_commands"] is False
+    assert subentry.data["send_split_delay"] == 0.0
+
+
 def test_hub_declares_target_subentry_type() -> None:
     entry = MockConfigEntry(domain=DOMAIN)
 

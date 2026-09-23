@@ -259,10 +259,15 @@ SECTION_COLOR_TEMP = "color_temp"
 SECTION_ADVANCED = "advanced"
 
 _DEFAULT_MANUAL_CONTROL_RESET_MINUTES = 0
+_DEFAULT_TRANSITION = 0.0
+_DEFAULT_ADAPT_ONLY_ON_STATE_CHANGE = False
+_DEFAULT_SEPARATE_TURN_ON_COMMANDS = False
+_DEFAULT_SEND_SPLIT_DELAY = 0.0
 
-# Unlike the hub's, every target section holds at least one required field, so
-# the section markers are required too: an absent section is a validation
-# error rather than something that can resolve to defaults.
+# Brightness and color temperature each hold a required field with no
+# default, so their section markers are required: an absent section is a
+# validation error. Every advanced field now has a default, so its section
+# can default to `{}` like the hub's -- collapsed and skippable.
 TARGET_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_ENTITIES): EntitySelector(
@@ -298,22 +303,30 @@ TARGET_SCHEMA = vol.Schema(
                 }
             )
         ),
-        vol.Required(SECTION_ADVANCED): section(
+        vol.Optional(SECTION_ADVANCED, default=dict): section(
             vol.Schema(
                 {
-                    vol.Required(CONF_TRANSITION): vol.All(
+                    vol.Optional(CONF_TRANSITION, default=_DEFAULT_TRANSITION): vol.All(
                         NumberSelector(
                             NumberSelectorConfig(mode=NumberSelectorMode.BOX)
                         ),
                         vol.Coerce(float),
                     ),
-                    vol.Required(CONF_ADAPT_ONLY_ON_STATE_CHANGE): bool,
+                    vol.Optional(
+                        CONF_ADAPT_ONLY_ON_STATE_CHANGE,
+                        default=_DEFAULT_ADAPT_ONLY_ON_STATE_CHANGE,
+                    ): bool,
                     vol.Optional(
                         CONF_MANUAL_CONTROL_RESET_MINUTES,
                         default=_DEFAULT_MANUAL_CONTROL_RESET_MINUTES,
                     ): _int_box(),
-                    vol.Required(CONF_SEPARATE_TURN_ON_COMMANDS): bool,
-                    vol.Required(CONF_SEND_SPLIT_DELAY): vol.All(
+                    vol.Optional(
+                        CONF_SEPARATE_TURN_ON_COMMANDS,
+                        default=_DEFAULT_SEPARATE_TURN_ON_COMMANDS,
+                    ): bool,
+                    vol.Optional(
+                        CONF_SEND_SPLIT_DELAY, default=_DEFAULT_SEND_SPLIT_DELAY
+                    ): vol.All(
                         NumberSelector(
                             NumberSelectorConfig(mode=NumberSelectorMode.BOX)
                         ),
