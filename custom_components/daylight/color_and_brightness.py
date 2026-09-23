@@ -1,7 +1,269 @@
 # Ported from basnijholt/adaptive-lighting (Apache-2.0). See NOTICE.
 from __future__ import annotations
 
+import bisect
+import datetime
+import logging
 import math
+from dataclasses import dataclass
+from datetime import UTC, timedelta
+from enum import Enum
+from functools import partial
+from typing import Literal
+
+import astral.sun
+
+
+class SunEvent(str, Enum):
+    """A set of sun events that happen during a day."""
+
+    # Same as homeassistant.const.SUN_EVENT_SUNRISE and homeassistant.const.SUN_EVENT_SUNSET
+    # We re-define them here to not depend on homeassistant in this file.
+    SUNRISE = "sunrise"
+    SUNSET = "sunset"
+    NOON = "solar_noon"
+    MIDNIGHT = "solar_midnight"
+
+
+_ORDER = (SunEvent.SUNRISE, SunEvent.NOON, SunEvent.SUNSET, SunEvent.MIDNIGHT)
+_ALLOWED_ORDERS = {_ORDER[i:] + _ORDER[:i] for i in range(len(_ORDER))}
+
+# On polar days without a sunrise/sunset, synthetic sun events are placed this
+# far from solar noon (polar night) or solar midnight (midnight sun), giving a
+# 1-hour synthetic "day" or "night" so the adaptation cycle keeps working.
+_POLAR_SUN_EVENT_OFFSET = timedelta(minutes=30)
+_POLAR_SUN_EVENT_EPSILON = timedelta(seconds=1)
+
+utcnow: partial[datetime.datetime] = partial(datetime.datetime.now, UTC)
+utcnow.__doc__ = "Get now in UTC time."
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SunEvents:
+    """Track the state of the sun and associated light settings."""
+
+    name: str
+    astral_observer: astral.Observer
+    sunrise_time: datetime.time | None
+    min_sunrise_time: datetime.time | None
+    max_sunrise_time: datetime.time | None
+    sunset_time: datetime.time | None
+    min_sunset_time: datetime.time | None
+    max_sunset_time: datetime.time | None
+    sunrise_offset: datetime.timedelta = datetime.timedelta()
+    sunset_offset: datetime.timedelta = datetime.timedelta()
+    timezone: datetime.tzinfo = UTC
+
+    def _astral_sunrise_or_sunset(
+        self,
+        dt: datetime.date,
+        event: Literal[SunEvent.SUNRISE, SunEvent.SUNSET],
+        offset: datetime.timedelta,
+    ) -> datetime.datetime:
+        """Return the astral sunrise/sunset, with a fallback for polar regions.
+
+        Above the polar circle the sun never crosses the horizon during polar
+        night and midnight sun, and `astral` raises a `ValueError` (see #1485).
+        On such days, synthesize a 1-hour "day" around solar noon (polar night)
+        or a 1-hour "night" around solar midnight (midnight sun), so the
+        adaptation cycle keeps working. The `(min/max)_(sunrise/sunset)_time`
+        options are applied on top of these synthetic times and can be used to
+        shape the resulting schedule. Configured offsets are limited to the
+        surrounding solar midnight/noon interval so they cannot invert the
+        required event order.
+        """
+        astral_event = (
+            astral.sun.sunrise if event == SunEvent.SUNRISE else astral.sun.sunset
+        )
+        try:
+            return astral_event(self.astral_observer, dt) + offset
+        except ValueError:
+            noon = astral.sun.noon(self.astral_observer, dt)
+            midnight = astral.sun.midnight(self.astral_observer, dt)
+            next_midnight = astral.sun.midnight(
+                self.astral_observer,
+                dt + timedelta(days=1),
+            )
+            noon_elevation = astral.sun.elevation(self.astral_observer, noon)
+            midnight_elevation = astral.sun.elevation(self.astral_observer, midnight)
+            # The sum of the sun's highest and lowest elevation of the day is
+            # ≈2x the solar declination, so its sign robustly distinguishes
+            # midnight sun from polar night, even on the boundary days where
+            # one elevation hovers around the horizon.
+            if noon_elevation + midnight_elevation > 0:
+                # Midnight sun: the sun stays above the horizon all day.
+                synthetic = (
+                    midnight + _POLAR_SUN_EVENT_OFFSET
+                    if event == SunEvent.SUNRISE
+                    else next_midnight - _POLAR_SUN_EVENT_OFFSET
+                )
+            else:
+                # Polar night: the sun stays below the horizon all day.
+                sign = -1 if event == SunEvent.SUNRISE else 1
+                synthetic = noon + sign * _POLAR_SUN_EVENT_OFFSET
+
+            lower, upper = (
+                (midnight, noon) if event == SunEvent.SUNRISE else (noon, next_midnight)
+            )
+            return min(
+                max(synthetic + offset, lower + _POLAR_SUN_EVENT_EPSILON),
+                upper - _POLAR_SUN_EVENT_EPSILON,
+            )
+
+    def sunrise(self, dt: datetime.date) -> datetime.datetime:
+        """Return the (adjusted) sunrise time for the given datetime."""
+        sunrise = (
+            self._astral_sunrise_or_sunset(
+                dt,
+                SunEvent.SUNRISE,
+                self.sunrise_offset,
+            )
+            if self.sunrise_time is None
+            else self._replace_time(dt, self.sunrise_time) + self.sunrise_offset
+        )
+        if self.min_sunrise_time is not None:
+            min_sunrise = self._replace_time(dt, self.min_sunrise_time)
+            sunrise = max(min_sunrise, sunrise)
+        if self.max_sunrise_time is not None:
+            max_sunrise = self._replace_time(dt, self.max_sunrise_time)
+            sunrise = min(max_sunrise, sunrise)
+        return sunrise
+
+    def sunset(self, dt: datetime.date) -> datetime.datetime:
+        """Return the (adjusted) sunset time for the given datetime."""
+        sunset = (
+            self._astral_sunrise_or_sunset(
+                dt,
+                SunEvent.SUNSET,
+                self.sunset_offset,
+            )
+            if self.sunset_time is None
+            else self._replace_time(dt, self.sunset_time) + self.sunset_offset
+        )
+        if self.min_sunset_time is not None:
+            min_sunset = self._replace_time(dt, self.min_sunset_time)
+            sunset = max(min_sunset, sunset)
+        if self.max_sunset_time is not None:
+            max_sunset = self._replace_time(dt, self.max_sunset_time)
+            sunset = min(max_sunset, sunset)
+        return sunset
+
+    def _replace_time(
+        self,
+        dt: datetime.date,
+        time: datetime.time,
+    ) -> datetime.datetime:
+        date_time = datetime.datetime.combine(dt, time)
+        dt_with_tz = date_time.replace(tzinfo=self.timezone)
+        return dt_with_tz.astimezone(UTC)
+
+    def noon_and_midnight(
+        self,
+        dt: datetime.datetime,
+        sunset: datetime.datetime | None = None,
+        sunrise: datetime.datetime | None = None,
+    ) -> tuple[datetime.datetime, datetime.datetime]:
+        """Return the (adjusted) noon and midnight times for the given datetime."""
+        if (
+            self.sunrise_time is None
+            and self.sunset_time is None
+            and self.min_sunrise_time is None
+            and self.max_sunrise_time is None
+            and self.min_sunset_time is None
+            and self.max_sunset_time is None
+        ):
+            solar_noon = astral.sun.noon(self.astral_observer, dt)
+            solar_midnight = astral.sun.midnight(self.astral_observer, dt)
+            return solar_noon, solar_midnight
+
+        if sunset is None:
+            sunset = self.sunset(dt)
+        if sunrise is None:
+            sunrise = self.sunrise(dt)
+
+        middle = abs(sunset - sunrise) / 2
+        if sunset > sunrise:
+            noon = sunrise + middle
+            next_sunrise = self.sunrise(dt + timedelta(days=1))
+            midnight = sunset + (next_sunrise - sunset) / 2
+        else:
+            midnight = sunset + middle
+            next_sunset = self.sunset(dt + timedelta(days=1))
+            noon = sunrise + (next_sunset - sunrise) / 2
+        return noon, midnight
+
+    def sun_events(self, dt: datetime.datetime) -> list[tuple[SunEvent, float]]:
+        """Get the four sun event's timestamps at 'dt'."""
+        sunrise = self.sunrise(dt)
+        sunset = self.sunset(dt)
+        solar_noon, solar_midnight = self.noon_and_midnight(dt, sunset, sunrise)
+        events: list[tuple[SunEvent, float]] = [
+            (SunEvent.SUNRISE, sunrise.timestamp()),
+            (SunEvent.SUNSET, sunset.timestamp()),
+            (SunEvent.NOON, solar_noon.timestamp()),
+            (SunEvent.MIDNIGHT, solar_midnight.timestamp()),
+        ]
+        self._validate_sun_event_order(events)
+        return events
+
+    def _validate_sun_event_order(self, events: list[tuple[SunEvent, float]]) -> None:
+        """Check if the sun events are in the expected order."""
+        events = sorted(events, key=lambda x: x[1])
+        events_names, _ = zip(*events, strict=True)
+        if events_names not in _ALLOWED_ORDERS:
+            msg = (
+                f"{self.name}: The sun events {events_names} are not in the expected"
+                " order. The Adaptive Lighting integration will not work!"
+                " This might happen if your sunrise/sunset offset is too large or"
+                " your manually set sunrise/sunset time is past/before noon/midnight."
+            )
+            _LOGGER.error(msg)
+            raise ValueError(msg)
+
+    def prev_and_next_events(
+        self,
+        dt: datetime.datetime,
+    ) -> list[tuple[SunEvent, float]]:
+        """Get the previous and next sun event."""
+        events = [
+            event
+            for days in [-1, 0, 1]
+            for event in self.sun_events(dt + timedelta(days=days))
+        ]
+        events = sorted(events, key=lambda x: x[1])
+        i_now = bisect.bisect([ts for _, ts in events], dt.timestamp())
+        return events[i_now - 1 : i_now + 1]
+
+    def sun_position(self, dt: datetime.datetime) -> float:
+        """Calculate the position of the sun, between [-1, 1]."""
+        target_ts = dt.timestamp()
+        (_, prev_ts), (next_event, next_ts) = self.prev_and_next_events(dt)
+        h, x = (
+            (prev_ts, next_ts)
+            if next_event in (SunEvent.SUNSET, SunEvent.SUNRISE)
+            else (next_ts, prev_ts)
+        )
+        # k = -1 between sunset and sunrise (sun below horizon)
+        # k = 1 between sunrise and sunset (sun above horizon)
+        k = 1 if next_event in (SunEvent.SUNSET, SunEvent.NOON) else -1
+        return k * (1 - ((target_ts - h) / (h - x)) ** 2)
+
+    def closest_event(
+        self,
+        dt: datetime.datetime,
+    ) -> tuple[Literal[SunEvent.SUNRISE, SunEvent.SUNSET], float]:
+        """Get the closest sunset or sunrise event."""
+        (prev_event, prev_ts), (next_event, next_ts) = self.prev_and_next_events(dt)
+        if SunEvent.SUNRISE in (prev_event, next_event):
+            ts_event = prev_ts if prev_event == SunEvent.SUNRISE else next_ts
+            return SunEvent.SUNRISE, ts_event
+        if SunEvent.SUNSET in (prev_event, next_event):
+            ts_event = prev_ts if prev_event == SunEvent.SUNSET else next_ts
+            return SunEvent.SUNSET, ts_event
+        msg = "No sunrise or sunset event found."
+        raise ValueError(msg)
 
 
 def find_a_b(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:

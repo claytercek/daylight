@@ -5,13 +5,37 @@ runtime dependency, so these tests are plain Python against pure functions
 and a frozen dataclass.
 """
 
+from datetime import date, datetime, timedelta, timezone
+
+import astral
 import pytest
 
 from custom_components.daylight.color_and_brightness import (
+    SunEvents,
     clamp,
     lerp,
     scaled_tanh,
 )
+
+UTC = timezone.utc
+
+# NYC
+_NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)
+# Svalbard, well above the Arctic Circle
+_SVALBARD_OBSERVER = astral.Observer(latitude=78.2232, longitude=15.6267, elevation=0)
+
+
+def _sun_events(observer: astral.Observer) -> SunEvents:
+    return SunEvents(
+        name="test",
+        astral_observer=observer,
+        sunrise_time=None,
+        min_sunrise_time=None,
+        max_sunrise_time=None,
+        sunset_time=None,
+        min_sunset_time=None,
+        max_sunset_time=None,
+    )
 
 
 def test_lerp_midpoint() -> None:
@@ -35,3 +59,40 @@ def test_scaled_tanh_endpoints_approach_y_min_and_y_max() -> None:
     assert low == pytest.approx(0.05)
     assert high == pytest.approx(0.95)
     assert mid == pytest.approx(0.5)
+
+
+def test_sunrise_and_sunset_nyc() -> None:
+    sun = _sun_events(_NYC_OBSERVER)
+    assert sun.sunrise(date(2026, 6, 21)) == datetime(
+        2026, 6, 21, 9, 24, 33, 257783, tzinfo=UTC
+    )
+    assert sun.sunset(date(2026, 6, 21)) == datetime(
+        2026, 6, 22, 0, 31, 13, 511454, tzinfo=UTC
+    )
+
+
+@pytest.mark.parametrize(
+    ("dt", "expected"),
+    [
+        (datetime(2026, 6, 21, 4, 0, tzinfo=UTC), -0.9529557666178728),
+        (datetime(2026, 6, 21, 9, 30, tzinfo=UTC), 0.02388894260608032),
+        (datetime(2026, 6, 21, 16, 0, tzinfo=UTC), 0.9837701823031548),
+        (datetime(2026, 6, 21, 23, 0, tzinfo=UTC), 0.3618573630445997),
+        (datetime(2026, 6, 22, 2, 0, tzinfo=UTC), -0.5546384954028851),
+    ],
+)
+def test_sun_position_nyc(dt: datetime, expected: float) -> None:
+    sun = _sun_events(_NYC_OBSERVER)
+    assert sun.sun_position(dt) == pytest.approx(expected, abs=1e-9)
+
+
+def test_sun_position_polar_night_fallback() -> None:
+    sun = _sun_events(_SVALBARD_OBSERVER)
+    dt = datetime(2026, 12, 21, 12, 0, tzinfo=UTC)
+    assert sun.sun_position(dt) == pytest.approx(-0.09790339087574773, abs=1e-9)
+
+
+def test_sun_position_midnight_sun_fallback() -> None:
+    sun = _sun_events(_SVALBARD_OBSERVER)
+    dt = datetime(2026, 6, 21, 0, 0, tzinfo=UTC)
+    assert sun.sun_position(dt) == pytest.approx(0.08697411312646541, abs=1e-9)
