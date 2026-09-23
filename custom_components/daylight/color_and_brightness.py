@@ -17,8 +17,9 @@ import astral.sun
 class SunEvent(str, Enum):
     """A set of sun events that happen during a day."""
 
-    # Same as homeassistant.const.SUN_EVENT_SUNRISE and homeassistant.const.SUN_EVENT_SUNSET
-    # We re-define them here to not depend on homeassistant in this file.
+    # Same as homeassistant.const.SUN_EVENT_SUNRISE and
+    # homeassistant.const.SUN_EVENT_SUNSET. We re-define them here to not
+    # depend on homeassistant in this file.
     SUNRISE = "sunrise"
     SUNSET = "sunset"
     NOON = "solar_noon"
@@ -394,8 +395,9 @@ class CurveSettings:
 def find_a_b(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:
     """Compute the values of 'a' and 'b' for a scaled and shifted tanh function.
 
-    Given two points (x1, y1) and (x2, y2), this function calculates the coefficients 'a' and 'b'
-    for a tanh function of the form y = 0.5 * (tanh(a * (x - b)) + 1) that passes through these points.
+    Given two points (x1, y1) and (x2, y2), this function calculates the
+    coefficients 'a' and 'b' for a tanh function of the form
+    y = 0.5 * (tanh(a * (x - b)) + 1) that passes through these points.
 
     The derivation is as follows:
 
@@ -452,10 +454,11 @@ def scaled_tanh(
 ) -> float:
     """Apply a scaled and shifted tanh function to a given input.
 
-    This function represents a transformation of the tanh function that scales and shifts
-    the output to lie between y_min and y_max. For values of 'x' close to 'x1' and 'x2'
-    (used to calculate 'a' and 'b'), the output of this function will be close to 'y_min'
-    and 'y_max', respectively.
+    This function represents a transformation of the tanh function that
+    scales and shifts the output to lie between y_min and y_max. For values
+    of 'x' close to 'x1' and 'x2' (used to calculate 'a' and 'b'), the
+    output of this function will be close to 'y_min' and 'y_max',
+    respectively.
 
     The equation of the function is as follows:
     y = y_min + (y_max - y_min) * 0.5 * (tanh(a * (x - b)) + 1)

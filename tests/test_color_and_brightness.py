@@ -5,7 +5,7 @@ runtime dependency, so these tests are plain Python against pure functions
 and a frozen dataclass.
 """
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import astral
 import pytest
@@ -18,7 +18,7 @@ from custom_components.daylight.color_and_brightness import (
     scaled_tanh,
 )
 
-UTC = timezone.utc
+UTC = UTC
 
 # NYC
 _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)

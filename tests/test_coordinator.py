@@ -16,7 +16,7 @@ import pytest
 from custom_components.daylight.color_and_brightness import CurveSettings
 from custom_components.daylight.coordinator import DayCoordinator, DayState
 
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 # NYC, matching test_color_and_brightness.py's ground-truth observer.
 _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)

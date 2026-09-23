@@ -18,7 +18,6 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -242,7 +241,10 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            if user_input[CONF_MIN_BRIGHTNESS_PCT] > user_input[CONF_MAX_BRIGHTNESS_PCT]:
+            if (
+                user_input[CONF_MIN_BRIGHTNESS_PCT]
+                > user_input[CONF_MAX_BRIGHTNESS_PCT]
+            ):
                 errors["base"] = "brightness_range_invalid"
             elif (
                 user_input[CONF_MIN_COLOR_TEMP_KELVIN]
