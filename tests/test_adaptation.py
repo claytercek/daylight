@@ -22,3 +22,23 @@ def test_brightness_only_when_color_temp_not_supported() -> None:
     )
 
     assert result == {"brightness_pct": 35, "transition": 2.5}
+
+
+def test_color_temp_kelvin_included_when_supported() -> None:
+    """`color_temp` in supported modes -> kelvin key added alongside brightness."""
+    result = compute_turn_on_kwargs(
+        supported_color_modes={"color_temp"},
+        brightness_factor=0.25,
+        color_factor=0.5,
+        min_brightness_pct=20,
+        max_brightness_pct=80,
+        min_color_temp_kelvin=2000,
+        max_color_temp_kelvin=6500,
+        transition=1.0,
+    )
+
+    assert result == {
+        "brightness_pct": 35,
+        "color_temp_kelvin": 4250,
+        "transition": 1.0,
+    }
