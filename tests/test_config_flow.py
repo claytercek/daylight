@@ -140,6 +140,58 @@ async def test_hub_user_step_omitted_time_overrides_are_none(
     }
 
 
+async def test_hub_user_step_applies_schema_defaults(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Keys omitted entirely (not just the time overrides) get their default."""
+    hass.config.config_dir = hass_config_dir
+    with patch(
+        "custom_components.daylight.async_setup_entry",
+        return_value=True,
+        create=True,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"]["sunrise_offset_minutes"] == 0
+    assert result["data"]["sunset_offset_minutes"] == 0
+    assert result["data"]["brightness_mode"] == "default"
+    assert result["data"]["brightness_mode_time_dark_minutes"] == 45
+    assert result["data"]["brightness_mode_time_light_minutes"] == 45
+    assert result["data"]["update_interval_seconds"] == 90
+
+
+async def test_target_add_step_applies_manual_control_reset_default(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    input_without_reset_minutes = {
+        key: value
+        for key, value in _TARGET_INPUT.items()
+        if key != "manual_control_reset_minutes"
+    }
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=input_without_reset_minutes
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    assert subentry.data["manual_control_reset_minutes"] == 0
+
+
 def test_hub_declares_target_subentry_type() -> None:
     entry = MockConfigEntry(domain=DOMAIN)
 

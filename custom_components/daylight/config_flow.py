@@ -75,7 +75,7 @@ _DEFAULT_UPDATE_INTERVAL_SECONDS = 90
 _BRIGHTNESS_MODE_OPTIONS = ["default", "linear", "tanh"]
 
 
-def _int_box(*, default: int | None = None) -> vol.All:
+def _int_box() -> vol.All:
     """A plain integer field with no bounds, via a text-entry (box) selector.
 
     `NumberSelector`'s slider mode requires both `min` and `max`; these
