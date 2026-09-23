@@ -220,9 +220,20 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         *because* `_async_member_state_changed` keeps observing while this
         switch is off. A member that is still genuinely hand-controlled
         re-flags on its next foreign state change.
+
+        Forgiving alone is not enough: the members are still sitting at
+        whatever the scene left them at. The one-shot correction below runs
+        regardless of `adapt_only_on_state_change`, which gates the periodic
+        tick only -- in that mode it is the sole thing that can undo a scene.
         """
         if not self.is_on:
             self._target.clear_all_manual_flags()
+            now = dt_util.utcnow()
+            # Freshly computed, never `coordinator.data`: the last poll can be
+            # most of an interval old by the time adaptation is resumed.
+            day_state = self.coordinator.compute_day_state(now)
+            for entity_id in self._settings.entities:
+                self._async_adapt(entity_id, day_state, now.timestamp())
         self._attr_is_on = True
         self.async_write_ha_state()
 
@@ -253,10 +264,10 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         """Record and dispatch one member's adaptation command.
 
         Adapting pushes values onto a light that is already on; it never
-        turns one on. Guarding here rather than in the caller covers the
-        periodic tick -- which would otherwise switch off members back on
-        every interval -- and is a no-op for the off->on correction, whose
-        only call site has already established `new_state.state == "on"`.
+        turns one on. Guarding here rather than in each caller covers the
+        periodic tick and the resume pass -- either of which would otherwise
+        switch off members back on -- and is a harmless no-op for the
+        not-on->on correction, which has already established the member is on.
         """
         state = self.hass.states.get(entity_id)
         if state is None or state.state != STATE_ON:

@@ -156,6 +156,9 @@ async def _turn_switch_on(hass, switch=KITCHEN_SWITCH) -> None:
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": switch}, blocking=True
     )
+    # Turning on adapts every on member, and dispatches each command as a
+    # task, so `blocking=True` alone does not land the service calls.
+    await hass.async_block_till_done()
 
 
 async def _tick(hass, entry, day_state=_DAY_STATE) -> None:
@@ -212,6 +215,8 @@ async def test_coordinator_tick_adapts_each_member_light(
     entry = await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
+    # Resuming adapts every on member itself; this test is about the tick.
+    calls.clear()
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
@@ -258,6 +263,8 @@ async def test_coordinator_tick_does_nothing_when_adapt_only_on_state_change(
     )
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
+    # Resuming adapts every on member itself; this test is about the tick.
+    calls.clear()
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
@@ -269,16 +276,25 @@ async def test_coordinator_tick_does_nothing_when_adapt_only_on_state_change(
 
 
 async def test_foreign_state_change_marks_a_member_manual_and_skips_it(
-    enable_custom_integrations, hass, hass_config_dir
+    enable_custom_integrations, hass, hass_config_dir, freezer
 ) -> None:
     entry = await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
+    calls.clear()
 
+    # Well past the resume command's own suppression window, so only the
+    # foreign context can be what flags this.
+    freezer.tick(datetime.timedelta(seconds=60))
     # Somebody grabs the dimmer: a state change under a context this
-    # integration never issued.
+    # integration never issued, while the light is already on.
     _set_light(hass, context=Context(), brightness=255)
     await hass.async_block_till_done()
+
+    # Asserted explicitly, so the empty call list below is pinned to the
+    # manual flag rather than to anything else that could suppress a call.
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
@@ -308,6 +324,7 @@ async def test_an_echo_of_our_own_command_never_marks_a_member_manual(
     entry = await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
+    calls.clear()
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
@@ -334,6 +351,7 @@ async def test_a_late_foreign_report_does_mark_a_member_manual(
     entry = await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
+    calls.clear()
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
@@ -452,7 +470,7 @@ async def test_turning_the_switch_on_forgives_flags_set_while_it_was_off(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
     """Fix 6: the movie-night scene that ran while adaptation was paused."""
-    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
 
     _set_light(hass, context=Context(), brightness=255)
@@ -461,15 +479,72 @@ async def test_turning_the_switch_on_forgives_flags_set_while_it_was_off(
     target = _switch_entity(hass)._target
     assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
 
-    await _turn_switch_on(hass)
-
-    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
         return_value=dict(_STUB_KWARGS),
     ):
-        await _tick(hass, entry)
-    assert len(calls) == 1
+        await _turn_switch_on(hass)
+
+    # Forgiven, and put right by the resume pass itself: the scene's values
+    # are gone before any tick gets a chance to run.
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS},
+    ]
+
+
+async def test_turning_the_switch_on_adapts_every_on_member_at_once(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Fix: resuming must itself correct the members it just forgave.
+
+    With `adapt_only_on_state_change` the periodic tick never adapts, so this
+    one-shot pass is the *only* thing that can undo a movie-night scene --
+    without it the member stays dim indefinitely.
+    """
+    await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(adapt_only_on_state_change=True)],
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+
+    _set_light(hass, context=Context(), brightness=12)
+    await hass.async_block_till_done()
+    assert calls == []
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        await _turn_switch_on(hass)
+
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS},
+    ]
+
+
+async def test_turning_the_switch_on_uses_a_freshly_computed_day_state(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """`coordinator.data` can be most of an interval old by the resume."""
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    async_mock_service(hass, "light", "turn_on")
+    await _tick(hass, entry, _STALE_DAY_STATE)
+
+    with (
+        patch(
+            "custom_components.daylight.switch.compute_turn_on_kwargs",
+            return_value=dict(_STUB_KWARGS),
+        ) as compute,
+        patch.object(
+            entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+        ),
+    ):
+        await _turn_switch_on(hass)
+
+    assert compute.call_args.kwargs["brightness_factor"] == 0.75
+    assert compute.call_args.kwargs["color_factor"] == 0.4
 
 
 async def test_turning_an_already_on_switch_on_keeps_manual_flags(
@@ -539,12 +614,15 @@ async def test_separate_turn_on_commands_split_brightness_from_colour(
         ],
     )
     calls = async_mock_service(hass, "light", "turn_on")
-    await _turn_switch_on(hass)
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
         return_value=dict(_STUB_KWARGS),
     ):
+        # Inside the patch: resuming adapts too, and would otherwise split a
+        # real command and sleep for the real delay.
+        await _turn_switch_on(hass)
+        calls.clear()
         started = time.monotonic()
         await _tick(hass, entry)
         elapsed = time.monotonic() - started
@@ -566,12 +644,15 @@ async def test_separate_turn_on_commands_send_one_call_without_colour(
         [_target_subentry(separate_turn_on_commands=True, send_split_delay=5.0)],
     )
     calls = async_mock_service(hass, "light", "turn_on")
-    await _turn_switch_on(hass)
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
         return_value={"brightness_pct": 62, "transition": 4.0},
     ):
+        # Inside the patch: resuming adapts too, and a real two-part command
+        # would sleep for the full 5s split delay.
+        await _turn_switch_on(hass)
+        calls.clear()
         await _tick(hass, entry)
 
     assert [call.data for call in calls] == [
@@ -668,6 +749,8 @@ async def test_tick_skips_members_that_are_currently_off(
     )
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
+    # Resuming adapts every on member itself; this test is about the tick.
+    calls.clear()
 
     target = _switch_entity(hass)._target
     now = dt_util.utcnow().timestamp()
