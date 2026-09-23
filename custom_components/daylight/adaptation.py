@@ -41,6 +41,10 @@ def compute_turn_on_kwargs(
             )
         ),
     }
+    # Lights without color_temp (rgb/hs/xy/onoff/brightness-only) get no
+    # color adaptation at all -- RGB color conversion was dropped as a
+    # feature, matching the prior decision to drop upstream's
+    # prefer_rgb_color option.
     if COLOR_MODE_COLOR_TEMP in supported_color_modes:
         kwargs["color_temp_kelvin"] = round(
             lerp(
@@ -51,9 +55,5 @@ def compute_turn_on_kwargs(
                 y2=max_color_temp_kelvin,
             )
         )
-    # Lights without color_temp (rgb/hs/xy/onoff/brightness-only) get no
-    # color adaptation at all -- RGB color conversion was dropped as a
-    # feature, matching the prior decision to drop upstream's
-    # prefer_rgb_color option.
     kwargs["transition"] = transition
     return kwargs
