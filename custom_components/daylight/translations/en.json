@@ -18,9 +18,9 @@
               "sunrise_offset_minutes": "Sunrise Offset Minutes"
             },
             "data_description": {
-              "sunrise_time": "Fixed sunrise time, overriding the astronomical sunrise.",
-              "min_sunrise_time": "Earliest clock time the sunrise is allowed to occur.",
-              "max_sunrise_time": "Latest clock time the sunrise is allowed to occur.",
+              "sunrise_time": "Leave blank to use the astronomical sunrise for this location, computed from the latitude, longitude and elevation Home Assistant is configured with. Set it only to override that with a fixed clock time.",
+              "min_sunrise_time": "Leave blank for no minimum. When set, a sunrise that lands earlier than this is moved up to it. Applies after the offset, to the astronomical sunrise and to a fixed Sunrise Time alike.",
+              "max_sunrise_time": "Leave blank for no maximum. When set, a sunrise that lands later than this is pulled back to it. Applies after the offset, to the astronomical sunrise and to a fixed Sunrise Time alike.",
               "sunrise_offset_minutes": "Minutes to shift sunrise, positive is later."
             }
           },
@@ -33,9 +33,9 @@
               "sunset_offset_minutes": "Sunset Offset Minutes"
             },
             "data_description": {
-              "sunset_time": "Fixed sunset time, overriding the astronomical sunset.",
-              "min_sunset_time": "Earliest clock time the sunset is allowed to occur.",
-              "max_sunset_time": "Latest clock time the sunset is allowed to occur.",
+              "sunset_time": "Leave blank to use the astronomical sunset for this location, computed from the latitude, longitude and elevation Home Assistant is configured with. Set it only to override that with a fixed clock time.",
+              "min_sunset_time": "Leave blank for no minimum. When set, a sunset that lands earlier than this is moved up to it. Applies after the offset, to the astronomical sunset and to a fixed Sunset Time alike.",
+              "max_sunset_time": "Leave blank for no maximum. When set, a sunset that lands later than this is pulled back to it. Applies after the offset, to the astronomical sunset and to a fixed Sunset Time alike.",
               "sunset_offset_minutes": "Minutes to shift sunset, positive is later."
             }
           },
