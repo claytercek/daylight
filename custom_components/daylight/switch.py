@@ -222,9 +222,16 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
 
     @callback
     def _async_adapt(self, entity_id: str, day_state: DayState, now: float) -> None:
-        """Record and dispatch one member's adaptation command."""
+        """Record and dispatch one member's adaptation command.
+
+        Adapting pushes values onto a light that is already on; it never
+        turns one on. Guarding here rather than in the caller covers the
+        periodic tick -- which would otherwise switch off members back on
+        every interval -- and is a no-op for the off->on correction, whose
+        only call site has already established `new_state.state == "on"`.
+        """
         state = self.hass.states.get(entity_id)
-        if state is None:
+        if state is None or state.state != STATE_ON:
             return
         kwargs = compute_turn_on_kwargs(
             supported_color_modes=set(

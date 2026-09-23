@@ -54,6 +54,7 @@ _TARGET_DATA = {
 
 KITCHEN_SWITCH = "switch.kitchen_adapt"
 KITCHEN_LIGHT = "light.kitchen"
+HALL_LIGHT = "light.hall"
 
 # Stand-in for whatever `adaptation.compute_turn_on_kwargs` would really
 # return. `switch.py` must forward these keys verbatim, so the expected
@@ -575,4 +576,38 @@ async def test_separate_turn_on_commands_send_one_call_without_colour(
 
     assert [call.data for call in calls] == [
         {"entity_id": KITCHEN_LIGHT, "brightness_pct": 62, "transition": 4.0},
+    ]
+
+
+async def test_tick_skips_members_that_are_currently_off(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Adapting is a push of values, never a `turn_on`: off members stay off.
+
+    The `on` sibling in the same tick proves the guard skips only the off
+    member rather than bailing out of the whole loop.
+    """
+    _set_light(hass, HALL_LIGHT, state="off")
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(entities=[KITCHEN_LIGHT, HALL_LIGHT])],
+        lights=(KITCHEN_LIGHT,),
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    target = _switch_entity(hass)._target
+    now = dt_util.utcnow().timestamp()
+    assert target.is_manual(KITCHEN_LIGHT, now=now) is False
+    assert target.is_manual(HALL_LIGHT, now=now) is False
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        await _tick(hass, entry)
+
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS},
     ]
