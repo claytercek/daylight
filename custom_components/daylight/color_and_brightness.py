@@ -65,7 +65,7 @@ class SunEvents:
         """Return the astral sunrise/sunset, with a fallback for polar regions.
 
         Above the polar circle the sun never crosses the horizon during polar
-        night and midnight sun, and `astral` raises a `ValueError` (see #1485).
+        night and midnight sun, and `astral` raises a `ValueError`.
         On such days, synthesize a 1-hour "day" around solar noon (polar night)
         or a 1-hour "night" around solar midnight (midnight sun), so the
         adaptation cycle keeps working. The `(min/max)_(sunrise/sunset)_time`
@@ -215,7 +215,7 @@ class SunEvents:
         if events_names not in _ALLOWED_ORDERS:
             msg = (
                 f"{self.name}: The sun events {events_names} are not in the expected"
-                " order. The Adaptive Lighting integration will not work!"
+                " order. Adaptation will not work!"
                 " This might happen if your sunrise/sunset offset is too large or"
                 " your manually set sunrise/sunset time is past/before noon/midnight."
             )
@@ -496,7 +496,7 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 
     `minimum` is not assumed to be <= `maximum`: a user may intentionally
     configure `min_brightness > max_brightness` (or the equivalent for color
-    temperature) for an inverted timescale (#1421). Sort the bounds first so
+    temperature) for an inverted timescale. Sort the bounds first so
     that case clamps against the real lower/upper bound instead of
     collapsing to `minimum` for every input.
     """
