@@ -182,3 +182,23 @@ async def test_next_sunset_does_not_skip_a_day_across_the_utc_date_boundary(
     state = coordinator.compute_day_state(dt)
 
     assert state.next_sunset == correct
+
+
+async def test_async_update_data_computes_fresh_state_from_dt_util_utcnow(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_async_update_data` defers to `dt_util.utcnow`, not the wall clock
+    directly -- monkeypatching that one seam pins the "now" it computes
+    against.
+    """
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 21, 9, 30, tzinfo=UTC)
+    monkeypatch.setattr(
+        "custom_components.daylight.coordinator.dt_util.utcnow", lambda: dt
+    )
+
+    data = await coordinator._async_update_data()
+
+    assert data.utc_now == dt
+    assert data == coordinator.compute_day_state(dt)

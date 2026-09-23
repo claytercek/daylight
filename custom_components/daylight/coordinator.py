@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from custom_components.daylight.color_and_brightness import CurveSettings
 
@@ -102,3 +103,7 @@ class DayCoordinator(DataUpdateCoordinator[DayState]):
             for offset in (-1, 0, 1)
         )
         return min(candidate for candidate in candidates if candidate > utc_now)
+
+    async def _async_update_data(self) -> DayState:
+        """Poll callback: compute a `DayState` for the current instant."""
+        return self.compute_day_state(dt_util.utcnow())
