@@ -100,7 +100,11 @@ HUB_SCHEMA = vol.Schema(
         vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): _int_box(),
         vol.Optional(
             CONF_BRIGHTNESS_MODE, default="default"
-        ): SelectSelector(SelectSelectorConfig(options=_BRIGHTNESS_MODE_OPTIONS)),
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=_BRIGHTNESS_MODE_OPTIONS, translation_key=CONF_BRIGHTNESS_MODE
+            )
+        ),
         vol.Optional(
             CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
             default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,

@@ -76,5 +76,14 @@
         }
       }
     }
+  },
+  "selector": {
+    "brightness_mode": {
+      "options": {
+        "default": "Default",
+        "linear": "Linear",
+        "tanh": "Smooth (tanh)"
+      }
+    }
   }
 }
