@@ -176,6 +176,10 @@ class Target:
         """Dump per-entity state as JSON-serializable primitives.
 
         Config is not included: the caller supplies it again to `from_dict`.
+
+        `last_commanded` is passed through as handed in, so tuple-valued
+        attributes (`rgb_color`) come back from JSON as lists. Nothing reads
+        `last_commanded` to decide anything, so this is left as is.
         """
         return {
             "entities": {
