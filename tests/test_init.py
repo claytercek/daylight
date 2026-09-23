@@ -88,24 +88,38 @@ async def test_async_setup_entry_builds_coordinator_with_curve_settings(
 async def test_async_setup_entry_forwards_to_switch_and_sensor_platforms(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
-    """Real `async_forward_entry_setups` call reaches both stub platforms."""
+    """Real `async_forward_entry_setups` call reaches both stub platforms.
+
+    Also proves `entry.runtime_data` is already set by the time the
+    platforms are forwarded -- switch.py/sensor.py depend on that ordering,
+    not just on the platforms eventually being called.
+    """
+    runtime_data_at_switch_setup: list[object] = []
+    runtime_data_at_sensor_setup: list[object] = []
+
+    async def _capture_switch(hass_, entry_, async_add_entities) -> None:
+        runtime_data_at_switch_setup.append(entry_.runtime_data)
+
+    async def _capture_sensor(hass_, entry_, async_add_entities) -> None:
+        runtime_data_at_sensor_setup.append(entry_.runtime_data)
+
     with (
         patch(
             "custom_components.daylight.switch.async_setup_entry",
-            AsyncMock(return_value=None),
-        ) as mock_switch_setup,
+            _capture_switch,
+        ),
         patch(
             "custom_components.daylight.sensor.async_setup_entry",
-            AsyncMock(return_value=None),
-        ) as mock_sensor_setup,
+            _capture_sensor,
+        ),
     ):
         entry = await _setup_entry(hass, enable_custom_integrations, hass_config_dir)
 
     assert entry.state is ConfigEntryState.LOADED
-    mock_switch_setup.assert_called_once()
-    mock_sensor_setup.assert_called_once()
-    assert mock_switch_setup.call_args.args[1] is entry
-    assert mock_sensor_setup.call_args.args[1] is entry
+    assert runtime_data_at_switch_setup == [entry.runtime_data]
+    assert runtime_data_at_sensor_setup == [entry.runtime_data]
+    assert isinstance(runtime_data_at_switch_setup[0], DayCoordinator)
+    assert isinstance(runtime_data_at_sensor_setup[0], DayCoordinator)
 
 
 async def test_async_setup_entry_reloads_on_update_listener(
@@ -122,6 +136,21 @@ async def test_async_setup_entry_reloads_on_update_listener(
         await hass.async_block_till_done()
 
     mock_reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_entry_survives_a_real_reload(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """A later module persists per-target state across exactly this reload."""
+    entry = await _setup_entry(hass, enable_custom_integrations, hass_config_dir)
+    coordinator_before_reload = entry.runtime_data
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert isinstance(entry.runtime_data, DayCoordinator)
+    assert entry.runtime_data is not coordinator_before_reload
 
 
 async def test_async_unload_entry(
