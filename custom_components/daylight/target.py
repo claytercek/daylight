@@ -111,6 +111,22 @@ class Target:
     def is_manual(self, entity_id: str, *, now: float) -> bool:
         """Whether `entity_id` is currently considered manually controlled."""
         state = self._entities.get(entity_id)
-        if state is None:
+        if state is None or not state.manual:
             return False
-        return state.manual
+        reset_seconds = self.config.manual_control_reset_minutes * 60
+        if (
+            reset_seconds > 0
+            and state.manual_since is not None
+            and now - state.manual_since >= reset_seconds
+        ):
+            self.clear_manual_flag(entity_id)
+            return False
+        return True
+
+    def clear_manual_flag(self, entity_id: str) -> None:
+        """Hand `entity_id` back to adaptive control."""
+        state = self._entities.get(entity_id)
+        if state is None:
+            return
+        state.manual = False
+        state.manual_since = None

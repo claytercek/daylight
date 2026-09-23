@@ -100,3 +100,31 @@ def test_untouched_entity_is_not_manual() -> None:
     target = _target()
 
     assert target.is_manual(LIGHT, now=0.0) is False
+
+
+def test_manual_flag_auto_clears_after_the_configured_minutes() -> None:
+    """Hand-dimmed at t=100 with a 15 minute reset: gone at t=100 + 900s."""
+    target = _target(manual_control_reset_minutes=15)
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=100.0)
+
+    assert target.is_manual(LIGHT, now=100.0 + 14 * 60) is True
+    assert target.is_manual(LIGHT, now=100.0 + 15 * 60) is False
+
+
+def test_manual_flag_never_auto_clears_when_reset_minutes_is_zero() -> None:
+    target = _target(manual_control_reset_minutes=0)
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=100.0)
+
+    assert target.is_manual(LIGHT, now=100.0 + 30 * 86400) is True
+
+
+def test_detection_resumes_after_an_auto_clear() -> None:
+    """The auto-clear really releases the entity, it does not just read False."""
+    target = _target(manual_control_reset_minutes=15)
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=100.0)
+    assert target.is_manual(LIGHT, now=1000.0 + 100.0) is False
+
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=1100.0)
+
+    assert target.observe_state_change(LIGHT, "C1", timestamp=1100.5) is False
+    assert target.is_manual(LIGHT, now=1101.0) is False
