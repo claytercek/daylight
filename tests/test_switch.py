@@ -488,3 +488,37 @@ async def test_turning_an_already_on_switch_on_keeps_manual_flags(
     await _turn_switch_on(hass)
 
     assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+
+
+async def test_manual_flags_survive_an_entry_reload(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """Fix 5: a reload must not hand a hand-dimmed light back to adaptation."""
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    freezer.tick(datetime.timedelta(seconds=60))
+    _set_light(hass, context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    entity_before = _switch_entity(hass)
+    assert (
+        entity_before._target.is_manual(
+            KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()
+        )
+        is True
+    )
+
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    entity_after = _switch_entity(hass)
+    assert entity_after is not entity_before
+    assert hass.states.get(KITCHEN_SWITCH).state == "on"
+    assert (
+        entity_after._target.is_manual(
+            KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()
+        )
+        is True
+    )

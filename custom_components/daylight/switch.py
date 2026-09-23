@@ -20,7 +20,7 @@ from homeassistant.helpers.event import (
     EventStateChangedData,
     async_track_state_change_event,
 )
-from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.restore_state import ExtraStoredData, RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
@@ -61,6 +61,17 @@ class TargetSettings:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class TargetStoredData(ExtraStoredData):
+    """Carries a target's manual-control state across a reload or restart."""
+
+    target_data: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return `Target.to_dict()` output, as HA will JSON-serialize it."""
+        return self.target_data
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -94,12 +105,24 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._attr_name = f"{subentry.title} adapt"
         self._attr_is_on = False
 
+    @property
+    def extra_restore_state_data(self) -> TargetStoredData:
+        """Persist which members are hand-controlled, alongside on/off."""
+        return TargetStoredData(self._target.to_dict())
+
     async def async_added_to_hass(self) -> None:
-        """Restore the previous on/off state, defaulting to off."""
+        """Restore on/off plus manual-control state, defaulting to off."""
         await super().async_added_to_hass()
         last_state = await self.async_get_last_state()
         if last_state is not None:
             self._attr_is_on = last_state.state == "on"
+
+        # Only `.as_dict()` is used: on a same-process reload this is our own
+        # `TargetStoredData`, but after a restart it is a `RestoredExtraData`
+        # wrapper around the JSON that was written out.
+        last_extra = await self.async_get_last_extra_data()
+        if last_extra is not None:
+            self._target = Target.from_dict(self._target.config, last_extra.as_dict())
 
         self.async_on_remove(
             async_track_state_change_event(
