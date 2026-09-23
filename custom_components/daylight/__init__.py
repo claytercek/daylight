@@ -26,7 +26,9 @@ def _parse_time(value: str | None) -> datetime.time | None:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a daylight hub entry: build its coordinator, forward platforms."""
     data = entry.data
-    timezone = await dt_util.async_get_time_zone(hass.config.time_zone)
+    # hass.config.time_zone is always a valid IANA zone name in a running HA
+    # instance, so this only falls back to UTC if that ever stops holding.
+    timezone = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
 
     curve_settings = CurveSettings(
         name=entry.title,
