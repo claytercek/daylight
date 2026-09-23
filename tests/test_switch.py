@@ -444,3 +444,47 @@ async def test_off_to_on_correction_fires_even_with_adapt_only_on_state_change(
         await hass.async_block_till_done()
 
     assert len(calls) == 1
+
+
+async def test_turning_the_switch_on_forgives_flags_set_while_it_was_off(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Fix 6: the movie-night scene that ran while adaptation was paused."""
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+
+    _set_light(hass, context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+
+    await _turn_switch_on(hass)
+
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        await _tick(hass, entry)
+    assert len(calls) == 1
+
+
+async def test_turning_an_already_on_switch_on_keeps_manual_flags(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """Only the off->on transition forgives; a redundant turn_on must not."""
+    await _setup(hass, hass_config_dir, [_target_subentry()])
+    async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    freezer.tick(datetime.timedelta(seconds=60))
+    _set_light(hass, context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+
+    await _turn_switch_on(hass)
+
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True

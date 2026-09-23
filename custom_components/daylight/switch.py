@@ -154,7 +154,16 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         )
 
     async def async_turn_on(self, **kwargs) -> None:
-        """Resume adaptation for this target."""
+        """Resume adaptation for this target.
+
+        Resuming forgives every manual flag raised while adaptation was
+        paused -- including the ones a scene or a hand-dim raised precisely
+        *because* the observation in `_async_member_state_changed` is
+        unconditional. A member that is still genuinely hand-controlled
+        re-flags on its next foreign state change.
+        """
+        if not self.is_on:
+            self._target.clear_all_manual_flags()
         self._attr_is_on = True
         self.async_write_ha_state()
 
