@@ -7,3 +7,20 @@ requires-python = ">=3.13"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+    "ty>=0.0.83",
+]
+
+[tool.ruff]
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Ported near-verbatim from upstream (see NOTICE); keep the original
+# `str, Enum` shape rather than restructuring the port.
+"custom_components/daylight/color_and_brightness.py" = ["UP042"]
