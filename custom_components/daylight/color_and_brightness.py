@@ -380,6 +380,16 @@ class CurveSettings:
             return self._brightness_factor_linear(dt)
         return self._brightness_factor_tanh(dt)
 
+    def color_factor(self, dt: datetime.datetime) -> float:
+        """Calculate the normalized color factor, in [0, 1].
+
+        Upstream rounds the resulting Kelvin value to the nearest 5 (a
+        Kelvin-specific rounding step); that doesn't apply here since this
+        returns a [0, 1] factor, not a Kelvin value, so it's dropped.
+        """
+        sun_position = self.sun.sun_position(dt)
+        return max(sun_position, 0.0)
+
 
 def find_a_b(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:
     """Compute the values of 'a' and 'b' for a scaled and shifted tanh function.

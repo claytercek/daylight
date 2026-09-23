@@ -115,6 +115,22 @@ def test_brightness_factor_tanh(dt: datetime, expected: float) -> None:
     assert settings.brightness_factor(dt) == pytest.approx(expected, rel=1e-6)
 
 
+@pytest.mark.parametrize(
+    ("dt", "expected"),
+    list(
+        zip(
+            _FIVE_TIMESTAMPS,
+            [0.0, 0.02388894260608032, 0.9837701823031548, 0.3618573630445997, 0.0],
+            strict=True,
+        )
+    ),
+)
+def test_color_factor(dt: datetime, expected: float) -> None:
+    # mode-independent - same formula regardless of brightness_mode
+    settings = _curve_settings("default")
+    assert settings.color_factor(dt) == pytest.approx(expected, rel=1e-6)
+
+
 def test_lerp_midpoint() -> None:
     assert lerp(5, x1=0, x2=10, y1=0, y2=100) == 50
 
