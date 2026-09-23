@@ -16,7 +16,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import Context, Event, HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
     EventStateChangedData,
     async_track_state_change_event,
@@ -83,7 +83,7 @@ class TargetStoredData(ExtraStoredData):
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Add one adaptation switch per target subentry of this hub entry."""
     coordinator = entry.runtime_data
