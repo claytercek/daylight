@@ -59,6 +59,10 @@ class _EntityState:
         default_factory=lambda: deque(maxlen=OWN_CONTEXT_MAXLEN)
     )
     suppress_until: float = 0.0
+    manual: bool = False
+    # Refreshed on every manual observation, so repeated hand-dimming keeps
+    # pushing the auto-reset deadline out rather than expiring mid-fiddle.
+    manual_since: float | None = None
 
 
 class Target:
@@ -100,8 +104,13 @@ class Target:
         state = self._state(entity_id)
         if context_id in state.own_context_ids or timestamp <= state.suppress_until:
             return False
+        state.manual = True
+        state.manual_since = timestamp
         return True
 
     def is_manual(self, entity_id: str, *, now: float) -> bool:
         """Whether `entity_id` is currently considered manually controlled."""
-        return False
+        state = self._entities.get(entity_id)
+        if state is None:
+            return False
+        return state.manual

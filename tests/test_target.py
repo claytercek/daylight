@@ -73,3 +73,30 @@ def test_unknown_context_after_the_window_closes_is_manual() -> None:
     target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
 
     assert target.observe_state_change(LIGHT, "C3", timestamp=20.0) is True
+
+
+def test_hand_dim_sets_the_manual_flag() -> None:
+    """Somebody turns the dimmer at t=20; the light stops being adapted."""
+    target = _target()
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=20.0)
+
+    assert target.is_manual(LIGHT, now=21.0) is True
+
+
+def test_manual_flag_is_not_cleared_by_a_later_recognised_report() -> None:
+    """Once flagged, only an explicit clear or the auto-reset lets go."""
+    target = _target()
+    target.observe_state_change(LIGHT, "HUMAN", timestamp=20.0)
+
+    target.record_command(LIGHT, "C2", {"brightness": 200}, 0.0, now=30.0)
+    target.observe_state_change(LIGHT, "C2", timestamp=30.5)
+
+    assert target.is_manual(LIGHT, now=31.0) is True
+
+
+def test_untouched_entity_is_not_manual() -> None:
+    target = _target()
+
+    assert target.is_manual(LIGHT, now=0.0) is False
