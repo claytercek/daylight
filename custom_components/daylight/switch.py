@@ -8,6 +8,7 @@ wiring between them, the coordinator, and hass.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from typing import Any
 
@@ -29,6 +30,13 @@ from .coordinator import DayCoordinator, DayState
 from .target import Target, TargetConfig
 
 TARGET_SUBENTRY_TYPE = "target"
+
+# The exact keys `adaptation.compute_turn_on_kwargs` can emit. Only needed to
+# split one combined command into two when `separate_turn_on_commands` is set
+# -- `adaptation.py` stays a single combined-kwargs function.
+BRIGHTNESS_KWARG = "brightness_pct"
+COLOR_TEMP_KWARG = "color_temp_kelvin"
+TRANSITION_KWARG = "transition"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -246,6 +254,28 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self, entity_id: str, kwargs: dict[str, Any], context: Context
     ) -> None:
         """Issue the `light.turn_on` call(s) for one member."""
+        if not self._settings.separate_turn_on_commands:
+            await self._async_turn_on(entity_id, kwargs, context)
+            return
+
+        # Some bulbs drop one attribute when both arrive together; splitting
+        # is pure I/O ordering, so it lives here rather than in adaptation.py.
+        shared = {
+            key: value for key, value in kwargs.items() if key == TRANSITION_KWARG
+        }
+        parts = [
+            {**shared, key: kwargs[key]}
+            for key in (BRIGHTNESS_KWARG, COLOR_TEMP_KWARG)
+            if key in kwargs
+        ]
+        for index, part in enumerate(parts):
+            if index:
+                await asyncio.sleep(self._settings.send_split_delay)
+            await self._async_turn_on(entity_id, part, context)
+
+    async def _async_turn_on(
+        self, entity_id: str, data: dict[str, Any], context: Context
+    ) -> None:
         await self.hass.services.async_call(
-            "light", "turn_on", {"entity_id": entity_id, **kwargs}, context=context
+            "light", "turn_on", {"entity_id": entity_id, **data}, context=context
         )

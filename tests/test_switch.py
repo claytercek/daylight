@@ -8,6 +8,7 @@ computation it does itself.
 
 import dataclasses
 import datetime
+import time
 from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigSubentryData
@@ -522,3 +523,56 @@ async def test_manual_flags_survive_an_entry_reload(
         )
         is True
     )
+
+
+async def test_separate_turn_on_commands_split_brightness_from_colour(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [
+            _target_subentry(
+                separate_turn_on_commands=True, send_split_delay=0.05
+            )
+        ],
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        started = time.monotonic()
+        await _tick(hass, entry)
+        elapsed = time.monotonic() - started
+
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 62, "transition": 4.0},
+        {"entity_id": KITCHEN_LIGHT, "color_temp_kelvin": 3200, "transition": 4.0},
+    ]
+    assert elapsed >= 0.05
+
+
+async def test_separate_turn_on_commands_send_one_call_without_colour(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """A light with no colour support yields no second call, and no delay."""
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(separate_turn_on_commands=True, send_split_delay=5.0)],
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value={"brightness_pct": 62, "transition": 4.0},
+    ):
+        await _tick(hass, entry)
+
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 62, "transition": 4.0},
+    ]
