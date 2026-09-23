@@ -11,6 +11,7 @@ import astral
 import pytest
 
 from custom_components.daylight.color_and_brightness import (
+    CurveSettings,
     SunEvents,
     clamp,
     lerp,
@@ -36,6 +37,82 @@ def _sun_events(observer: astral.Observer) -> SunEvents:
         min_sunset_time=None,
         max_sunset_time=None,
     )
+
+
+def _curve_settings(brightness_mode: str) -> CurveSettings:
+    return CurveSettings(
+        name="test",
+        astral_observer=_NYC_OBSERVER,
+        sunrise_time=None,
+        min_sunrise_time=None,
+        max_sunrise_time=None,
+        sunset_time=None,
+        min_sunset_time=None,
+        max_sunset_time=None,
+        brightness_mode_time_dark=timedelta(minutes=45),
+        brightness_mode_time_light=timedelta(minutes=45),
+        brightness_mode=brightness_mode,
+    )
+
+
+_FIVE_TIMESTAMPS = [
+    datetime(2026, 6, 21, 4, 0, tzinfo=UTC),
+    datetime(2026, 6, 21, 9, 30, tzinfo=UTC),
+    datetime(2026, 6, 21, 16, 0, tzinfo=UTC),
+    datetime(2026, 6, 21, 23, 0, tzinfo=UTC),
+    datetime(2026, 6, 22, 2, 0, tzinfo=UTC),
+]
+
+
+@pytest.mark.parametrize(
+    ("dt", "expected"),
+    list(
+        zip(
+            _FIVE_TIMESTAMPS,
+            [0.047044233382127154, 1, 1, 1, 0.4453615045971149],
+            strict=True,
+        )
+    ),
+)
+def test_brightness_factor_default(dt: datetime, expected: float) -> None:
+    settings = _curve_settings("default")
+    assert settings.brightness_factor(dt) == pytest.approx(expected, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("dt", "expected"),
+    list(
+        zip(
+            _FIVE_TIMESTAMPS,
+            [0, 0.560507817974797, 1, 1, 0],
+            strict=True,
+        )
+    ),
+)
+def test_brightness_factor_linear(dt: datetime, expected: float) -> None:
+    settings = _curve_settings("linear")
+    assert settings.brightness_factor(dt) == pytest.approx(expected, rel=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("dt", "expected"),
+    list(
+        zip(
+            _FIVE_TIMESTAMPS,
+            [
+                1.1515113281235223e-06,
+                0.5881500832202475,
+                0.9999999999942095,
+                0.9974498371056668,
+                0.0029923145456173805,
+            ],
+            strict=True,
+        )
+    ),
+)
+def test_brightness_factor_tanh(dt: datetime, expected: float) -> None:
+    settings = _curve_settings("tanh")
+    assert settings.brightness_factor(dt) == pytest.approx(expected, rel=1e-6)
 
 
 def test_lerp_midpoint() -> None:

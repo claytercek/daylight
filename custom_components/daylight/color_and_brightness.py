@@ -8,7 +8,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 from enum import Enum
-from functools import partial
+from functools import cached_property, partial
 from typing import Literal
 
 import astral.sun
@@ -264,6 +264,121 @@ class SunEvents:
             return SunEvent.SUNSET, ts_event
         msg = "No sunrise or sunset event found."
         raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class CurveSettings:
+    """Hub-level sun-timing and curve-shape config.
+
+    Holds only the timing/curve-shape knobs shared by every target light on
+    a hub. Each target's own min/max brightness and color-temp range lives
+    elsewhere; `brightness_factor`/`color_factor` return normalized [0, 1]
+    factors that a coordinator later scales into each target's own range.
+    """
+
+    name: str
+    astral_observer: astral.Observer
+    sunrise_time: datetime.time | None
+    min_sunrise_time: datetime.time | None
+    max_sunrise_time: datetime.time | None
+    sunset_time: datetime.time | None
+    min_sunset_time: datetime.time | None
+    max_sunset_time: datetime.time | None
+    brightness_mode_time_dark: datetime.timedelta
+    brightness_mode_time_light: datetime.timedelta
+    brightness_mode: Literal["default", "linear", "tanh"] = "default"
+    sunrise_offset: datetime.timedelta = datetime.timedelta()
+    sunset_offset: datetime.timedelta = datetime.timedelta()
+    timezone: datetime.tzinfo = UTC
+
+    @cached_property
+    def sun(self) -> SunEvents:
+        """Return the SunEvents object."""
+        return SunEvents(
+            name=self.name,
+            astral_observer=self.astral_observer,
+            sunrise_time=self.sunrise_time,
+            sunrise_offset=self.sunrise_offset,
+            min_sunrise_time=self.min_sunrise_time,
+            max_sunrise_time=self.max_sunrise_time,
+            sunset_time=self.sunset_time,
+            sunset_offset=self.sunset_offset,
+            min_sunset_time=self.min_sunset_time,
+            max_sunset_time=self.max_sunset_time,
+            timezone=self.timezone,
+        )
+
+    def _brightness_factor_default(self, dt: datetime.datetime) -> float:
+        """Calculate the brightness factor using the default method."""
+        sun_position = self.sun.sun_position(dt)
+        if sun_position > 0:
+            return 1.0
+        return 1 + sun_position
+
+    def _brightness_factor_tanh(self, dt: datetime.datetime) -> float:
+        event, ts_event = self.sun.closest_event(dt)
+        dark = self.brightness_mode_time_dark.total_seconds()
+        light = self.brightness_mode_time_light.total_seconds()
+        if event == SunEvent.SUNRISE:
+            brightness = scaled_tanh(
+                dt.timestamp() - ts_event,
+                x1=-dark,
+                x2=+light,
+                y1=0.05,  # be at 5% of range at x1
+                y2=0.95,  # be at 95% of range at x2
+                y_min=0.0,
+                y_max=1.0,
+            )
+        elif event == SunEvent.SUNSET:
+            brightness = scaled_tanh(
+                dt.timestamp() - ts_event,
+                x1=-light,  # shifted timestamp for the start of sunset
+                x2=+dark,  # shifted timestamp for the end of sunset
+                y1=0.95,  # be at 95% of range at the start of sunset
+                y2=0.05,  # be at 5% of range at the end of sunset
+                y_min=0.0,
+                y_max=1.0,
+            )
+        else:
+            msg = "Unsupported sun event"
+            raise ValueError(msg)
+        return clamp(brightness, 0.0, 1.0)
+
+    def _brightness_factor_linear(self, dt: datetime.datetime) -> float:
+        event, ts_event = self.sun.closest_event(dt)
+        # at ts_event - dt_start, brightness == start_brightness
+        # at ts_event + dt_end, brightness == end_brightness
+        dark = self.brightness_mode_time_dark.total_seconds()
+        light = self.brightness_mode_time_light.total_seconds()
+        if event == SunEvent.SUNRISE:
+            brightness = lerp(
+                dt.timestamp() - ts_event,
+                x1=-dark,
+                x2=+light,
+                y1=0.0,
+                y2=1.0,
+            )
+        elif event == SunEvent.SUNSET:
+            brightness = lerp(
+                dt.timestamp() - ts_event,
+                x1=-light,
+                x2=+dark,
+                y1=1.0,
+                y2=0.0,
+            )
+        else:
+            msg = "Unsupported sun event"
+            raise ValueError(msg)
+        return clamp(brightness, 0.0, 1.0)
+
+    def brightness_factor(self, dt: datetime.datetime) -> float:
+        """Calculate the normalized brightness factor, in [0, 1]."""
+        assert self.brightness_mode in ("default", "linear", "tanh")
+        if self.brightness_mode == "default":
+            return self._brightness_factor_default(dt)
+        if self.brightness_mode == "linear":
+            return self._brightness_factor_linear(dt)
+        return self._brightness_factor_tanh(dt)
 
 
 def find_a_b(x1: float, x2: float, y1: float, y2: float) -> tuple[float, float]:
