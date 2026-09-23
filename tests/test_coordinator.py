@@ -84,3 +84,24 @@ async def test_curve_settings_is_stored(hass) -> None:
     settings = _curve_settings()
     coordinator = DayCoordinator(hass, settings)
     assert coordinator.curve_settings is settings
+
+
+async def test_compute_day_state_wires_brightness_color_and_sun_position(
+    hass,
+) -> None:
+    """Ground truth: direct CurveSettings/SunEvents calls, not re-derived math.
+
+    2026-06-21 04:00 UTC (NYC) is chosen because sun_position (-0.953),
+    brightness_factor (0.047) and color_factor (0.0) are all pairwise
+    distinct there, so a swapped field would fail this test.
+    """
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 21, 4, 0, tzinfo=UTC)
+
+    state = coordinator.compute_day_state(dt)
+
+    assert state.sun_position == settings.sun.sun_position(dt)
+    assert state.brightness_factor == settings.brightness_factor(dt)
+    assert state.color_factor == settings.color_factor(dt)
+    assert state.utc_now == dt
