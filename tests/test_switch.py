@@ -579,6 +579,78 @@ async def test_separate_turn_on_commands_send_one_call_without_colour(
     ]
 
 
+def _set_light_unavailable(hass, entity_id=KITCHEN_LIGHT):
+    """Drop a member off the network, as a Zigbee/Hue reconnect blip would."""
+    hass.states.async_set(entity_id, "unavailable", {}, context=Context())
+
+
+async def test_an_unavailable_blip_does_not_forgive_a_hand_dim(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """A reconnect is not a resume gesture.
+
+    Only an explicit off->on -- of the light, or of this switch -- hands a
+    genuinely hand-dimmed member back to adaptation. Losing the network in
+    between must not launder the flag away, so the blip's `unavailable -> on`
+    leg has to adapt-but-not-clear: with the member already manual, that
+    leaves it manual and issues nothing.
+    """
+    await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+
+    # Past the resume pass's own suppression window, so the hand-dim below is
+    # genuinely what flags this member.
+    freezer.tick(datetime.timedelta(seconds=60))
+    _set_light(hass, context=Context(), brightness=255)
+    await hass.async_block_till_done()
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+    assert calls == []
+
+    _set_light_unavailable(hass)
+    await hass.async_block_till_done()
+    _set_light(hass, state="on", context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+    assert calls == []
+
+
+async def test_an_unavailable_blip_alone_never_marks_a_member_manual(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """Fix: a reconnect with no user action must leave the member adapting.
+
+    Both legs carry a foreign context and land well past the suppression
+    window, so under the old uniform observation the `on -> unavailable` leg
+    flagged the member manual for good -- `unavailable -> on` was not an
+    off->on, so nothing ever cleared it.
+    """
+    await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+
+    freezer.tick(datetime.timedelta(seconds=60))
+    _set_light_unavailable(hass)
+    await hass.async_block_till_done()
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        _set_light(hass, state="on", context=Context(), brightness=255)
+        await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS},
+    ]
+
+
 async def test_tick_skips_members_that_are_currently_off(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:

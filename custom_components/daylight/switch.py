@@ -14,7 +14,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.const import STATE_OFF, STATE_ON
+from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Context, Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
@@ -144,9 +144,14 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
     ) -> None:
         """Feed every member state change into the manual-control tracker.
 
-        Unconditional -- `Target`'s contract is uniform, and a member
-        hand-dimmed while this switch is off must still come back flagged
-        manual so that turning the switch on is what resolves it.
+        Every change except an availability one -- a member hand-dimmed while
+        this switch is off must still come back flagged manual so that turning
+        the switch on is what resolves it, but a light dropping off the network
+        and coming back is not a person touching it. That skip is load-bearing
+        rather than tidiness: without it a bare reconnect flags manual on its
+        `on->unavailable` leg, and the following `unavailable->on` then neither
+        clears that flag (only off->on does) nor adapts (the clear-vs-adapt
+        split below gates adapting on it) -- stuck manual for good.
 
         There is deliberately no service-call target resolution anywhere in
         this module: detection is purely `state_changed`-based (never
@@ -155,17 +160,28 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         targeting exists in this design, so there is nothing to resolve.
         """
         entity_id = event.data["entity_id"]
-        self._target.observe_state_change(
-            entity_id, event.context.id, timestamp=event.time_fired.timestamp()
-        )
-
         old_state = event.data["old_state"]
         new_state = event.data["new_state"]
+        availability_change = (
+            old_state is None
+            or new_state is None
+            or old_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+            or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
+        )
+        if not availability_change:
+            self._target.observe_state_change(
+                entity_id, event.context.id, timestamp=event.time_fired.timestamp()
+            )
+
+        # Deliberately not an `else`: a light reconnecting straight back to
+        # `on` still needs its immediate adaptation correction below. Every
+        # edge into `on` reaches the block below -- off->on, unavailable->on
+        # and unknown->on alike -- but only off->on clears a manual flag.
         if (
             old_state is None
             or new_state is None
-            or old_state.state != STATE_OFF
             or new_state.state != STATE_ON
+            or old_state.state == STATE_ON
         ):
             return
         if not self.is_on:
@@ -173,11 +189,23 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             # switch on later is what resolves it.
             return
 
-        # A light coming up from off has no hand-dim state worth preserving.
-        # Any off->on is this integration's "resume adaptation" gesture, and
-        # overrides the flag the uniform observation above may have just set.
-        self._target.clear_manual_flag(entity_id)
+        # Clearing and adapting are separate gestures with separate triggers.
+        # Only an explicit off->on is a person saying "resume", so only that
+        # forgives a hand-dim -- a reconnect must not launder the flag away.
+        # Known limitation: `on (manual) -> off -> unavailable -> on` reaches
+        # here with `old_state` of `unavailable`, so the user's genuine off is
+        # not honoured and the member stays manual. Accepted rather than
+        # tracked: it needs a blip landing in the window between the off and
+        # the light's own on-report.
+        if old_state.state == STATE_OFF:
+            self._target.clear_manual_flag(entity_id)
+
+        # Adapting, by contrast, is warranted by *any* entry into `on` -- the
+        # member is showing whatever it was last left at, which is stale.
+        # Gated only on the flag as it stands after the clear above.
         now = dt_util.utcnow()
+        if self._target.is_manual(entity_id, now=now.timestamp()):
+            return
         # Freshly computed, never `coordinator.data`: the last poll can be
         # most of an interval old by the time a light is switched on.
         self._async_adapt(
@@ -189,8 +217,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
 
         Resuming forgives every manual flag raised while adaptation was
         paused -- including the ones a scene or a hand-dim raised precisely
-        *because* the observation in `_async_member_state_changed` is
-        unconditional. A member that is still genuinely hand-controlled
+        *because* `_async_member_state_changed` keeps observing while this
+        switch is off. A member that is still genuinely hand-controlled
         re-flags on its next foreign state change.
         """
         if not self.is_on:
