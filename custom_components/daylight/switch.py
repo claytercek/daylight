@@ -13,6 +13,7 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import Context, Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import (
@@ -122,10 +123,34 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         holds literal entity ids -- no `area_id`/`device_id`/`label_id`
         targeting exists in this design, so there is nothing to resolve.
         """
+        entity_id = event.data["entity_id"]
         self._target.observe_state_change(
-            event.data["entity_id"],
-            event.context.id,
-            timestamp=event.time_fired.timestamp(),
+            entity_id, event.context.id, timestamp=event.time_fired.timestamp()
+        )
+
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
+        if (
+            old_state is None
+            or new_state is None
+            or old_state.state != STATE_OFF
+            or new_state.state != STATE_ON
+        ):
+            return
+        if not self.is_on:
+            # Whatever the observation above flagged stands: turning this
+            # switch on later is what resolves it.
+            return
+
+        # A light coming up from off has no hand-dim state worth preserving.
+        # Any off->on is this integration's "resume adaptation" gesture, and
+        # overrides the flag the uniform observation above may have just set.
+        self._target.clear_manual_flag(entity_id)
+        now = dt_util.utcnow()
+        # Freshly computed, never `coordinator.data`: the last poll can be
+        # most of an interval old by the time a light is switched on.
+        self._async_adapt(
+            entity_id, self.coordinator.compute_day_state(now), now.timestamp()
         )
 
     async def async_turn_on(self, **kwargs) -> None:

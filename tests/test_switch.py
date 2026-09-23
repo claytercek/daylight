@@ -6,6 +6,7 @@ adapter: almost everything it can get wrong is in the wiring, not in any
 computation it does itself.
 """
 
+import dataclasses
 import datetime
 from unittest.mock import patch
 
@@ -72,6 +73,12 @@ _DAY_STATE = DayState(
     is_above_horizon=True,
     next_sunrise=datetime.datetime(2024, 6, 2, 9, 30, tzinfo=datetime.UTC),
     next_sunset=datetime.datetime(2024, 6, 1, 23, 30, tzinfo=datetime.UTC),
+)
+
+# Deliberately different factors from `_DAY_STATE`, to stand in for a cached
+# `coordinator.data` that has gone stale since the last poll.
+_STALE_DAY_STATE = dataclasses.replace(
+    _DAY_STATE, brightness_factor=0.01, color_factor=0.02
 )
 
 
@@ -338,5 +345,102 @@ async def test_a_late_foreign_report_does_mark_a_member_manual(
         await hass.async_block_till_done()
 
         await _tick(hass, entry)
+
+    assert len(calls) == 1
+
+
+async def _setup_with_light_off(hass, hass_config_dir, **subentry_overrides):
+    """Set up a hub whose only member light starts out off."""
+    _set_light(hass, state="off")
+    return await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(**subentry_overrides)],
+        lights=(),
+    )
+
+
+async def test_member_turning_on_while_the_switch_is_on_is_corrected(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Fix 1: an off->on member is adapted at once and is not left manual."""
+    await _setup_with_light_off(hass, hass_config_dir)
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        _set_light(hass, state="on", context=Context(), brightness=255)
+        await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
+    assert len(calls) == 1
+    assert calls[0].data == {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS}
+
+
+async def test_member_turning_on_while_the_switch_is_off_stays_manual(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Fix 6's setup: the identical event, switch off, leaves the flag set."""
+    await _setup_with_light_off(hass, hass_config_dir)
+    calls = async_mock_service(hass, "light", "turn_on")
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        _set_light(hass, state="on", context=Context(), brightness=255)
+        await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+    assert calls == []
+
+
+async def test_off_to_on_correction_uses_a_freshly_computed_day_state(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Fix 3: `coordinator.data` can be stale by the time a light comes up."""
+    entry = await _setup_with_light_off(hass, hass_config_dir)
+    async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    await _tick(hass, entry, _STALE_DAY_STATE)
+
+    with (
+        patch(
+            "custom_components.daylight.switch.compute_turn_on_kwargs",
+            return_value=dict(_STUB_KWARGS),
+        ) as compute,
+        patch.object(
+            entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+        ) as compute_day_state,
+    ):
+        _set_light(hass, state="on", context=Context(), brightness=255)
+        await hass.async_block_till_done()
+
+    assert compute_day_state.call_count == 1
+    assert compute.call_args.kwargs["brightness_factor"] == 0.75
+    assert compute.call_args.kwargs["color_factor"] == 0.4
+
+
+async def test_off_to_on_correction_fires_even_with_adapt_only_on_state_change(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """In that mode the off->on event is the *only* adaptation trigger."""
+    await _setup_with_light_off(
+        hass, hass_config_dir, adapt_only_on_state_change=True
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        _set_light(hass, state="on", context=Context(), brightness=255)
+        await hass.async_block_till_done()
 
     assert len(calls) == 1
