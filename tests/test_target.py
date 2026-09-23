@@ -157,3 +157,20 @@ def test_movie_night_off_to_on_releases_every_entity() -> None:
     assert target.is_manual("light.den", now=20.0) is False
     assert target.observe_state_change(LIGHT, "HUMAN2", timestamp=30.0) is True
     assert target.is_manual(LIGHT, now=31.0) is True
+
+
+def test_own_context_ring_is_bounded_at_sixteen() -> None:
+    """A long-running session must not accumulate context ids forever.
+
+    17 commands, one per minute. The 1st context has fallen out of the ring;
+    the 2nd (oldest survivor) and the 17th are still recognised. All reports
+    land at t=10_000, long past every suppression window, so only ring
+    membership can be doing the work.
+    """
+    target = _target()
+    for i in range(17):
+        target.record_command(LIGHT, f"C{i}", {"brightness": 128}, 0.0, now=i * 60.0)
+
+    assert target.observe_state_change(LIGHT, "C0", timestamp=10_000.0) is True
+    assert target.observe_state_change(LIGHT, "C1", timestamp=10_000.0) is False
+    assert target.observe_state_change(LIGHT, "C16", timestamp=10_000.0) is False
