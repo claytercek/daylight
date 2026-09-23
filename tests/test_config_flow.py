@@ -9,8 +9,26 @@ through `hass.config_entries`, which uses HA's loader-based discovery.
 from unittest.mock import patch
 
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.daylight.config_flow import (
+    DaylightConfigFlow,
+    TargetSubentryFlowHandler,
+)
 from custom_components.daylight.const import DOMAIN
+
+_TARGET_INPUT = {
+    "entities": ["light.kitchen", "light.den"],
+    "min_brightness_pct": 10,
+    "max_brightness_pct": 100,
+    "min_color_temp_kelvin": 2000,
+    "max_color_temp_kelvin": 6500,
+    "transition": 30.0,
+    "adapt_only_on_state_change": True,
+    "manual_control_reset_minutes": 15,
+    "separate_turn_on_commands": False,
+    "send_split_delay": 0.5,
+}
 
 
 async def test_hub_user_step_shows_form(
@@ -120,3 +138,126 @@ async def test_hub_user_step_omitted_time_overrides_are_none(
         "brightness_mode_time_light_minutes": 45,
         "update_interval_seconds": 90,
     }
+
+
+def test_hub_declares_target_subentry_type() -> None:
+    entry = MockConfigEntry(domain=DOMAIN)
+
+    assert DaylightConfigFlow.async_get_supported_subentry_types(entry) == {
+        "target": TargetSubentryFlowHandler
+    }
+
+
+async def test_target_add_step_shows_form(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+
+
+async def test_target_add_step_submit_creates_subentry(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """Given the full target input, the subentry's `data` is the literal dict."""
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=_TARGET_INPUT
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentries = list(entry.subentries.values())
+    assert len(subentries) == 1
+    assert subentries[0].data == _TARGET_INPUT
+
+
+async def test_target_add_step_rejects_inverted_brightness_range(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    bad_input = {**_TARGET_INPUT, "min_brightness_pct": 90, "max_brightness_pct": 10}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=bad_input
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "brightness_range_invalid"}
+    assert entry.subentries == {}
+
+
+async def test_target_add_step_rejects_inverted_color_temp_range(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    bad_input = {
+        **_TARGET_INPUT,
+        "min_color_temp_kelvin": 6500,
+        "max_color_temp_kelvin": 2000,
+    }
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=bad_input
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    assert result["errors"] == {"base": "color_temp_range_invalid"}
+    assert entry.subentries == {}
+
+
+async def test_target_reconfigure_replaces_subentry_data(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": _TARGET_INPUT,
+                "subentry_type": "target",
+                "title": "light.kitchen, light.den",
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+    new_input = {**_TARGET_INPUT, "transition": 5.0}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=new_input
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.subentries[subentry_id].data == new_input
