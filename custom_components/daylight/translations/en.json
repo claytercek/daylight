@@ -3,32 +3,55 @@
     "step": {
       "user": {
         "data": {
-          "sunrise_time": "Sunrise Time",
-          "min_sunrise_time": "Minimum Sunrise Time",
-          "max_sunrise_time": "Maximum Sunrise Time",
-          "sunset_time": "Sunset Time",
-          "min_sunset_time": "Minimum Sunset Time",
-          "max_sunset_time": "Maximum Sunset Time",
-          "sunrise_offset_minutes": "Sunrise Offset Minutes",
-          "sunset_offset_minutes": "Sunset Offset Minutes",
-          "brightness_mode": "Brightness Mode",
-          "brightness_mode_time_dark_minutes": "Brightness Ramp Time When Dark",
-          "brightness_mode_time_light_minutes": "Brightness Ramp Time When Light",
           "update_interval_seconds": "Update Interval Seconds"
         },
         "data_description": {
-          "sunrise_time": "Fixed sunrise time, overriding the astronomical sunrise.",
-          "min_sunrise_time": "Earliest clock time the sunrise is allowed to occur.",
-          "max_sunrise_time": "Latest clock time the sunrise is allowed to occur.",
-          "sunset_time": "Fixed sunset time, overriding the astronomical sunset.",
-          "min_sunset_time": "Earliest clock time the sunset is allowed to occur.",
-          "max_sunset_time": "Latest clock time the sunset is allowed to occur.",
-          "sunrise_offset_minutes": "Minutes to shift sunrise, positive is later.",
-          "sunset_offset_minutes": "Minutes to shift sunset, positive is later.",
-          "brightness_mode": "Shape of the brightness curve around sunrise and sunset.",
-          "brightness_mode_time_dark_minutes": "Minutes before/after a sun event the dark-side ramp starts or ends.",
-          "brightness_mode_time_light_minutes": "Minutes before/after a sun event the light-side ramp starts or ends.",
           "update_interval_seconds": "How often, in seconds, the daylight coordinator recalculates."
+        },
+        "sections": {
+          "sunrise": {
+            "name": "Sunrise",
+            "data": {
+              "sunrise_time": "Sunrise Time",
+              "min_sunrise_time": "Minimum Sunrise Time",
+              "max_sunrise_time": "Maximum Sunrise Time",
+              "sunrise_offset_minutes": "Sunrise Offset Minutes"
+            },
+            "data_description": {
+              "sunrise_time": "Fixed sunrise time, overriding the astronomical sunrise.",
+              "min_sunrise_time": "Earliest clock time the sunrise is allowed to occur.",
+              "max_sunrise_time": "Latest clock time the sunrise is allowed to occur.",
+              "sunrise_offset_minutes": "Minutes to shift sunrise, positive is later."
+            }
+          },
+          "sunset": {
+            "name": "Sunset",
+            "data": {
+              "sunset_time": "Sunset Time",
+              "min_sunset_time": "Minimum Sunset Time",
+              "max_sunset_time": "Maximum Sunset Time",
+              "sunset_offset_minutes": "Sunset Offset Minutes"
+            },
+            "data_description": {
+              "sunset_time": "Fixed sunset time, overriding the astronomical sunset.",
+              "min_sunset_time": "Earliest clock time the sunset is allowed to occur.",
+              "max_sunset_time": "Latest clock time the sunset is allowed to occur.",
+              "sunset_offset_minutes": "Minutes to shift sunset, positive is later."
+            }
+          },
+          "brightness_curve": {
+            "name": "Brightness Curve",
+            "data": {
+              "brightness_mode": "Brightness Mode",
+              "brightness_mode_time_dark_minutes": "Brightness Ramp Time When Dark",
+              "brightness_mode_time_light_minutes": "Brightness Ramp Time When Light"
+            },
+            "data_description": {
+              "brightness_mode": "Shape of the brightness curve around sunrise and sunset.",
+              "brightness_mode_time_dark_minutes": "Minutes before/after a sun event the dark-side ramp starts or ends.",
+              "brightness_mode_time_light_minutes": "Minutes before/after a sun event the light-side ramp starts or ends."
+            }
+          }
         }
       }
     }

@@ -11,10 +11,16 @@ Two flows live here:
 * `TargetSubentryFlowHandler` -- one "target" subentry per light/light group.
   It collects and stores the full per-target config; it does not construct a
   `target.TargetConfig` or wire anything to `switch.py`.
+
+Both forms group their fields into `data_entry_flow.section`s, so a submission
+arrives nested under the section names. Stored `data` stays flat: it is
+flattened on the way in (`_flatten_sections`) and re-nested on the way back
+out into a reconfigure form (`_nest_sections`).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
@@ -26,6 +32,7 @@ from homeassistant.config_entries import (
     SubentryFlowResult,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers.selector import (
     EntitySelector,
     EntitySelectorConfig,
@@ -54,6 +61,10 @@ CONF_BRIGHTNESS_MODE = "brightness_mode"
 CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES = "brightness_mode_time_dark_minutes"
 CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES = "brightness_mode_time_light_minutes"
 CONF_UPDATE_INTERVAL_SECONDS = "update_interval_seconds"
+
+SECTION_SUNRISE = "sunrise"
+SECTION_SUNSET = "sunset"
+SECTION_BRIGHTNESS_CURVE = "brightness_curve"
 
 _OPTIONAL_TIME_KEYS = (
     CONF_SUNRISE_TIME,
@@ -88,31 +99,102 @@ def _int_box() -> vol.All:
     )
 
 
+def _section_fields(schema: vol.Schema) -> dict[str, tuple[str, ...]]:
+    """Map each section name in `schema` to the field names it holds.
+
+    Read off the real schema rather than a hand-kept table, so re-grouping a
+    field cannot desynchronize the flatten/nest pair from the form.
+    """
+    return {
+        str(key): tuple(str(inner) for inner in value.schema.schema)
+        for key, value in schema.schema.items()
+        if isinstance(value, section)
+    }
+
+
+def _flatten_sections(
+    schema: vol.Schema, user_input: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Collapse a section-shaped submission into the flat dict that gets stored."""
+    sections = _section_fields(schema)
+    flat: dict[str, Any] = {}
+    for key, value in user_input.items():
+        if key in sections:
+            flat.update(value)
+        else:
+            flat[key] = value
+    return flat
+
+
+def _nest_sections(schema: vol.Schema, data: Mapping[str, Any]) -> dict[str, Any]:
+    """Re-shape flat stored `data` into `schema`'s section layout.
+
+    `add_suggested_values_to_schema` only descends into a section when the
+    suggested values are already nested under that section's name, so flat
+    stored data has to be put back into this shape to repopulate a form.
+    """
+    sections = _section_fields(schema)
+    sectioned = {field for fields in sections.values() for field in fields}
+    nested: dict[str, Any] = {
+        name: {field: data[field] for field in fields if field in data}
+        for name, fields in sections.items()
+    }
+    nested.update(
+        {key: value for key, value in data.items() if key not in sectioned}
+    )
+    return nested
+
+
+# Each section's own marker matches the strength of its contents: every hub
+# field is optional, so an untouched section resolves to its defaults instead
+# of failing validation. `default=dict` is what makes those inner defaults
+# fire -- with a bare `vol.Optional(name)` an absent section is simply left
+# out of the validated result, and `__init__.py` reads every hub key
+# unconditionally.
 HUB_SCHEMA = vol.Schema(
     {
-        vol.Optional(CONF_SUNRISE_TIME): TimeSelector(),
-        vol.Optional(CONF_MIN_SUNRISE_TIME): TimeSelector(),
-        vol.Optional(CONF_MAX_SUNRISE_TIME): TimeSelector(),
-        vol.Optional(CONF_SUNSET_TIME): TimeSelector(),
-        vol.Optional(CONF_MIN_SUNSET_TIME): TimeSelector(),
-        vol.Optional(CONF_MAX_SUNSET_TIME): TimeSelector(),
-        vol.Optional(CONF_SUNRISE_OFFSET_MINUTES, default=0): _int_box(),
-        vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): _int_box(),
-        vol.Optional(
-            CONF_BRIGHTNESS_MODE, default="default"
-        ): SelectSelector(
-            SelectSelectorConfig(
-                options=_BRIGHTNESS_MODE_OPTIONS, translation_key=CONF_BRIGHTNESS_MODE
+        vol.Optional(SECTION_SUNRISE, default=dict): section(
+            vol.Schema(
+                {
+                    vol.Optional(CONF_SUNRISE_TIME): TimeSelector(),
+                    vol.Optional(CONF_MIN_SUNRISE_TIME): TimeSelector(),
+                    vol.Optional(CONF_MAX_SUNRISE_TIME): TimeSelector(),
+                    vol.Optional(CONF_SUNRISE_OFFSET_MINUTES, default=0): _int_box(),
+                }
             )
         ),
-        vol.Optional(
-            CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
-            default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
-        ): _int_box(),
-        vol.Optional(
-            CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES,
-            default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
-        ): _int_box(),
+        vol.Optional(SECTION_SUNSET, default=dict): section(
+            vol.Schema(
+                {
+                    vol.Optional(CONF_SUNSET_TIME): TimeSelector(),
+                    vol.Optional(CONF_MIN_SUNSET_TIME): TimeSelector(),
+                    vol.Optional(CONF_MAX_SUNSET_TIME): TimeSelector(),
+                    vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): _int_box(),
+                }
+            )
+        ),
+        vol.Optional(SECTION_BRIGHTNESS_CURVE, default=dict): section(
+            vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_BRIGHTNESS_MODE, default="default"
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=_BRIGHTNESS_MODE_OPTIONS,
+                            translation_key=CONF_BRIGHTNESS_MODE,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
+                        default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
+                    ): _int_box(),
+                    vol.Optional(
+                        CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES,
+                        default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
+                    ): _int_box(),
+                }
+            )
+        ),
         vol.Optional(
             CONF_UPDATE_INTERVAL_SECONDS, default=_DEFAULT_UPDATE_INTERVAL_SECONDS
         ): _int_box(),
@@ -123,10 +205,11 @@ HUB_SCHEMA = vol.Schema(
 def _normalize_hub_input(user_input: dict[str, Any]) -> dict[str, Any]:
     """Build the exact dict stored in the hub entry's `data`.
 
-    Every key is always present, so a missing optional time override is
-    stored as an explicit `None` rather than simply being absent.
+    The submission arrives nested by section; the stored dict is flat. Every
+    key is always present, so a missing optional time override is stored as an
+    explicit `None` rather than simply being absent.
     """
-    data = dict(user_input)
+    data = _flatten_sections(HUB_SCHEMA, user_input)
     for key in _OPTIONAL_TIME_KEYS:
         data.setdefault(key, None)
     return data

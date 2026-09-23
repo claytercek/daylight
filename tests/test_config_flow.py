@@ -47,7 +47,7 @@ async def test_hub_user_step_shows_form(
 async def test_hub_user_step_full_input_creates_entry(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
-    """Given a fully-specified input, the entry's `data` is the literal dict."""
+    """A fully-specified section-shaped input is stored as one flat dict."""
     hass.config.config_dir = hass_config_dir
     with patch(
         "custom_components.daylight.async_setup_entry",
@@ -61,17 +61,23 @@ async def test_hub_user_step_full_input_creates_entry(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             user_input={
-                "sunrise_time": "07:00:00",
-                "min_sunrise_time": "06:00:00",
-                "max_sunrise_time": "08:00:00",
-                "sunset_time": "19:00:00",
-                "min_sunset_time": "18:00:00",
-                "max_sunset_time": "20:00:00",
-                "sunrise_offset_minutes": -15,
-                "sunset_offset_minutes": 30,
-                "brightness_mode": "linear",
-                "brightness_mode_time_dark_minutes": 60,
-                "brightness_mode_time_light_minutes": 30,
+                "sunrise": {
+                    "sunrise_time": "07:00:00",
+                    "min_sunrise_time": "06:00:00",
+                    "max_sunrise_time": "08:00:00",
+                    "sunrise_offset_minutes": -15,
+                },
+                "sunset": {
+                    "sunset_time": "19:00:00",
+                    "min_sunset_time": "18:00:00",
+                    "max_sunset_time": "20:00:00",
+                    "sunset_offset_minutes": 30,
+                },
+                "brightness_curve": {
+                    "brightness_mode": "linear",
+                    "brightness_mode_time_dark_minutes": 60,
+                    "brightness_mode_time_light_minutes": 30,
+                },
                 "update_interval_seconds": 120,
             },
         )
@@ -113,11 +119,13 @@ async def test_hub_user_step_omitted_time_overrides_are_none(
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             user_input={
-                "sunrise_offset_minutes": 0,
-                "sunset_offset_minutes": 0,
-                "brightness_mode": "default",
-                "brightness_mode_time_dark_minutes": 45,
-                "brightness_mode_time_light_minutes": 45,
+                "sunrise": {"sunrise_offset_minutes": 0},
+                "sunset": {"sunset_offset_minutes": 0},
+                "brightness_curve": {
+                    "brightness_mode": "default",
+                    "brightness_mode_time_dark_minutes": 45,
+                    "brightness_mode_time_light_minutes": 45,
+                },
                 "update_interval_seconds": 90,
             },
         )
@@ -166,6 +174,47 @@ async def test_hub_user_step_applies_schema_defaults(
     assert result["data"]["brightness_mode_time_dark_minutes"] == 45
     assert result["data"]["brightness_mode_time_light_minutes"] == 45
     assert result["data"]["update_interval_seconds"] == 90
+
+
+async def test_hub_user_step_applies_defaults_of_an_absent_section(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """A section the user never touched still contributes its field defaults.
+
+    `__init__.py` reads every hub key unconditionally, so an omitted section
+    must not leave holes in the stored data.
+    """
+    hass.config.config_dir = hass_config_dir
+    with patch(
+        "custom_components.daylight.async_setup_entry",
+        return_value=True,
+        create=True,
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={"sunrise": {"sunrise_time": "07:00:00"}},
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {
+        "sunrise_time": "07:00:00",
+        "min_sunrise_time": None,
+        "max_sunrise_time": None,
+        "sunset_time": None,
+        "min_sunset_time": None,
+        "max_sunset_time": None,
+        "sunrise_offset_minutes": 0,
+        "sunset_offset_minutes": 0,
+        "brightness_mode": "default",
+        "brightness_mode_time_dark_minutes": 45,
+        "brightness_mode_time_light_minutes": 45,
+        "update_interval_seconds": 90,
+    }
 
 
 async def test_target_add_step_applies_manual_control_reset_default(
