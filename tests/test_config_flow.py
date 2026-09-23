@@ -313,3 +313,36 @@ async def test_target_reconfigure_replaces_subentry_data(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.subentries[subentry_id].data == new_input
+
+
+async def test_target_reconfigure_retitles_the_subentry_from_its_entities(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    """The title is derived from the entity list, so it has to track it."""
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": _TARGET_INPUT,
+                "subentry_type": "target",
+                "title": "light.kitchen, light.den",
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+    subentry_id = next(iter(entry.subentries))
+
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={**_TARGET_INPUT, "entities": ["light.porch"]},
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[subentry_id].title == "light.porch"

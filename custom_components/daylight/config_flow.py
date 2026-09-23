@@ -265,6 +265,7 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
                 return self.async_update_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
+                    title=", ".join(user_input[CONF_ENTITIES]),
                     data=user_input,
                 )
 
