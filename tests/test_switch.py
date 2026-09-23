@@ -10,7 +10,9 @@ import datetime
 from unittest.mock import patch
 
 from homeassistant.config_entries import ConfigSubentryData
-from homeassistant.core import State
+from homeassistant.core import Context, State
+from homeassistant.helpers import entity_component
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_mock_service,
@@ -82,7 +84,18 @@ def _target_subentry(title="Kitchen", **overrides) -> ConfigSubentryData:
     )
 
 
-async def _setup(hass, hass_config_dir, subentries) -> MockConfigEntry:
+async def _setup(
+    hass, hass_config_dir, subentries, lights=(KITCHEN_LIGHT,)
+) -> MockConfigEntry:
+    """Set up a hub entry, with member lights already present.
+
+    Seeding the member states *before* setup matters: once the switch entity
+    exists it observes every member `state_changed`, so a state written
+    afterwards under a foreign context would be flagged manual.
+    """
+    for entity_id in lights:
+        _set_light(hass, entity_id)
+
     hass.config.config_dir = hass_config_dir
     hass.config.latitude = 40.7128
     hass.config.longitude = -74.0060
@@ -103,10 +116,31 @@ async def _setup(hass, hass_config_dir, subentries) -> MockConfigEntry:
     return entry
 
 
-def _set_light(hass, entity_id=KITCHEN_LIGHT, state="on", color_modes=("color_temp",)):
+def _set_light(
+    hass,
+    entity_id=KITCHEN_LIGHT,
+    state="on",
+    color_modes=("color_temp",),
+    context=None,
+    brightness=128,
+):
+    """Write a member light's state.
+
+    `brightness` exists so consecutive writes actually differ: hass fires
+    `state_reported`, not `state_changed`, when state and attributes are
+    unchanged, and only the latter reaches the switch's listener.
+    """
     hass.states.async_set(
-        entity_id, state, {"supported_color_modes": list(color_modes)}
+        entity_id,
+        state,
+        {"supported_color_modes": list(color_modes), "brightness": brightness},
+        context=context,
     )
+
+
+def _switch_entity(hass, entity_id=KITCHEN_SWITCH):
+    """Reach the live entity object, for assertions on its `Target`."""
+    return hass.data[entity_component.DATA_INSTANCES]["switch"].get_entity(entity_id)
 
 
 async def _turn_switch_on(hass, switch=KITCHEN_SWITCH) -> None:
@@ -168,7 +202,6 @@ async def test_coordinator_tick_adapts_each_member_light(
 ) -> None:
     entry = await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
-    _set_light(hass)
     await _turn_switch_on(hass)
 
     with patch(
@@ -196,7 +229,6 @@ async def test_coordinator_tick_does_nothing_while_the_switch_is_off(
 ) -> None:
     entry = await _setup(hass, hass_config_dir, [_target_subentry()])
     calls = async_mock_service(hass, "light", "turn_on")
-    _set_light(hass)
 
     with patch(
         "custom_components.daylight.switch.compute_turn_on_kwargs",
@@ -216,7 +248,6 @@ async def test_coordinator_tick_does_nothing_when_adapt_only_on_state_change(
         [_target_subentry(adapt_only_on_state_change=True)],
     )
     calls = async_mock_service(hass, "light", "turn_on")
-    _set_light(hass)
     await _turn_switch_on(hass)
 
     with patch(
@@ -226,3 +257,86 @@ async def test_coordinator_tick_does_nothing_when_adapt_only_on_state_change(
         await _tick(hass, entry)
 
     assert calls == []
+
+
+async def test_foreign_state_change_marks_a_member_manual_and_skips_it(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    # Somebody grabs the dimmer: a state change under a context this
+    # integration never issued.
+    _set_light(hass, context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        await _tick(hass, entry)
+
+    assert calls == []
+
+
+async def test_members_are_observed_even_while_the_switch_is_off(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    await _setup(hass, hass_config_dir, [_target_subentry()])
+    async_mock_service(hass, "light", "turn_on")
+    _set_light(hass, context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+
+
+async def test_an_echo_of_our_own_command_never_marks_a_member_manual(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """Past the suppression window, only the context id can clear the echo."""
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        await _tick(hass, entry)
+        assert len(calls) == 1
+
+        # Well past `transition` (4s) + target.py's grace (2s), so
+        # suppression cannot be what spares this report.
+        freezer.tick(datetime.timedelta(seconds=60))
+        _set_light(hass, context=calls[0].context, brightness=255)
+        await hass.async_block_till_done()
+
+        await _tick(hass, entry)
+
+    assert len(calls) == 2
+
+
+async def test_a_late_foreign_report_does_mark_a_member_manual(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    """The mirror of the echo test: same timing, a context we never issued."""
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch(
+        "custom_components.daylight.switch.compute_turn_on_kwargs",
+        return_value=dict(_STUB_KWARGS),
+    ):
+        await _tick(hass, entry)
+        assert len(calls) == 1
+
+        freezer.tick(datetime.timedelta(seconds=60))
+        _set_light(hass, context=Context(), brightness=255)
+        await hass.async_block_till_done()
+
+        await _tick(hass, entry)
+
+    assert len(calls) == 1

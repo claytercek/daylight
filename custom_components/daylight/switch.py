@@ -13,8 +13,12 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.core import Context, HomeAssistant, callback
+from homeassistant.core import Context, Event, HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import (
+    EventStateChangedData,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -95,6 +99,34 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         last_state = await self.async_get_last_state()
         if last_state is not None:
             self._attr_is_on = last_state.state == "on"
+
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, self._settings.entities, self._async_member_state_changed
+            )
+        )
+
+    @callback
+    def _async_member_state_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        """Feed every member state change into the manual-control tracker.
+
+        Unconditional -- `Target`'s contract is uniform, and a member
+        hand-dimmed while this switch is off must still come back flagged
+        manual so that turning the switch on is what resolves it.
+
+        There is deliberately no service-call target resolution anywhere in
+        this module: detection is purely `state_changed`-based (never
+        `EVENT_CALL_SERVICE`), and a target's configured `entities` only ever
+        holds literal entity ids -- no `area_id`/`device_id`/`label_id`
+        targeting exists in this design, so there is nothing to resolve.
+        """
+        self._target.observe_state_change(
+            event.data["entity_id"],
+            event.context.id,
+            timestamp=event.time_fired.timestamp(),
+        )
 
     async def async_turn_on(self, **kwargs) -> None:
         """Resume adaptation for this target."""
