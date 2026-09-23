@@ -127,3 +127,58 @@ async def test_is_above_horizon(hass, dt: datetime.datetime, expected: bool) -> 
     state = coordinator.compute_day_state(dt)
 
     assert state.is_above_horizon is expected
+
+
+async def test_next_sunrise_and_next_sunset_before_sunrise(hass) -> None:
+    """Before today's sunrise: next_sunrise is today's, next_sunset is ahead.
+
+    Ground truth: direct `SunEvents.sunrise`/`.sunset` calls, date-indexed by
+    the astral library the way `color_and_brightness.py` already uses them.
+    """
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 21, 4, 0, tzinfo=UTC)
+
+    state = coordinator.compute_day_state(dt)
+
+    assert state.next_sunrise == settings.sun.sunrise(datetime.date(2026, 6, 21))
+    assert state.next_sunset == settings.sun.sunset(datetime.date(2026, 6, 21))
+
+
+async def test_next_sunrise_rolls_forward_after_todays_sunrise(hass) -> None:
+    """Once today's sunrise has passed, next_sunrise is tomorrow's."""
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 21, 12, 0, tzinfo=UTC)
+
+    state = coordinator.compute_day_state(dt)
+
+    assert state.next_sunrise == settings.sun.sunrise(datetime.date(2026, 6, 22))
+
+
+async def test_next_sunset_does_not_skip_a_day_across_the_utc_date_boundary(
+    hass,
+) -> None:
+    """Regression: a naive "today's date-indexed event, else roll forward one
+    day" lookup breaks for observers west of the prime meridian, where an
+    evening sunset is indexed under one UTC calendar date but the instant
+    itself falls after UTC midnight, on the next one.
+
+    At 2026-06-22 00:10 UTC (NYC), the real next sunset is only ~21 minutes
+    away: `sunset(date(2026, 6, 21))`, which lands at 2026-06-22 00:31 UTC.
+    A same-day lookup (`sunset(date(2026, 6, 22))`) resolves to 2026-06-23
+    00:31 UTC instead -- already in the future relative to `utc_now`, so a
+    naive implementation would never roll forward and would wrongly report
+    a sunset almost 24 hours away instead of the correct ~21 minutes.
+    """
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 22, 0, 10, tzinfo=UTC)
+
+    correct = settings.sun.sunset(datetime.date(2026, 6, 21))
+    naive_and_wrong = settings.sun.sunset(datetime.date(2026, 6, 22))
+    assert correct < dt + datetime.timedelta(hours=1) < naive_and_wrong
+
+    state = coordinator.compute_day_state(dt)
+
+    assert state.next_sunset == correct
