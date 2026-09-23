@@ -11,6 +11,7 @@ by re-deriving the formulas coordinator.py wraps.
 import datetime
 
 import astral
+import pytest
 
 from custom_components.daylight.color_and_brightness import CurveSettings
 from custom_components.daylight.coordinator import DayCoordinator, DayState
@@ -105,3 +106,24 @@ async def test_compute_day_state_wires_brightness_color_and_sun_position(
     assert state.brightness_factor == settings.brightness_factor(dt)
     assert state.color_factor == settings.color_factor(dt)
     assert state.utc_now == dt
+
+
+@pytest.mark.parametrize(
+    ("dt", "expected"),
+    [
+        # sun_position ≈ -0.953 (below horizon) -- ground truth from
+        # test_compute_day_state_wires_brightness_color_and_sun_position.
+        (datetime.datetime(2026, 6, 21, 4, 0, tzinfo=UTC), False),
+        # sun_position ≈ +0.024 (above horizon).
+        (datetime.datetime(2026, 6, 21, 9, 30, tzinfo=UTC), True),
+    ],
+)
+async def test_is_above_horizon(hass, dt: datetime.datetime, expected: bool) -> None:
+    settings = _curve_settings()
+    coordinator = DayCoordinator(hass, settings)
+    # Confirm the ground-truth premise before trusting the assertion below.
+    assert (settings.sun.sun_position(dt) >= 0) == expected
+
+    state = coordinator.compute_day_state(dt)
+
+    assert state.is_above_horizon is expected
