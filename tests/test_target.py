@@ -9,6 +9,8 @@ Timestamps are float seconds on an arbitrary epoch; the scenarios read as
 `t=0`, `t=6.5` and so on.
 """
 
+import json
+
 from custom_components.daylight.target import Target, TargetConfig
 
 LIGHT = "light.kitchen"
@@ -174,3 +176,52 @@ def test_own_context_ring_is_bounded_at_sixteen() -> None:
     assert target.observe_state_change(LIGHT, "C0", timestamp=10_000.0) is True
     assert target.observe_state_change(LIGHT, "C1", timestamp=10_000.0) is False
     assert target.observe_state_change(LIGHT, "C16", timestamp=10_000.0) is False
+
+
+def test_dumped_state_is_json_serializable() -> None:
+    """A future RestoreEntity stores this verbatim, so no custom encoding."""
+    target = _target(manual_control_reset_minutes=15)
+    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+    target.observe_state_change("light.den", "HUMAN", timestamp=10.0)
+
+    assert json.loads(json.dumps(target.to_dict())) == target.to_dict()
+
+
+def test_restored_target_keeps_flags_contexts_and_windows() -> None:
+    """Reload mid-transition: nothing the target knew is lost."""
+    config = TargetConfig(manual_control_reset_minutes=15)
+    before = Target(config)
+    before.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+    before.observe_state_change("light.den", "HUMAN", timestamp=10.0)
+
+    after = Target.from_dict(config, before.to_dict())
+
+    assert after.is_manual("light.den", now=11.0) is True
+    assert after.observe_state_change(LIGHT, "C1", timestamp=100.0) is False
+    assert after.observe_state_change(LIGHT, "C2", timestamp=6.5) is False
+    assert after.observe_state_change(LIGHT, "C3", timestamp=20.0) is True
+
+
+def test_restored_manual_flag_still_auto_clears_on_its_original_deadline() -> None:
+    config = TargetConfig(manual_control_reset_minutes=15)
+    before = Target(config)
+    before.observe_state_change(LIGHT, "HUMAN", timestamp=100.0)
+
+    after = Target.from_dict(config, before.to_dict())
+
+    assert after.is_manual(LIGHT, now=100.0 + 14 * 60) is True
+    assert after.is_manual(LIGHT, now=100.0 + 15 * 60) is False
+
+
+def test_restored_own_context_ring_is_still_bounded() -> None:
+    """Restoration must rebuild a *bounded* ring, not a plain list."""
+    config = TargetConfig()
+    before = Target(config)
+    for i in range(16):
+        before.record_command(LIGHT, f"C{i}", {"brightness": 128}, 0.0, now=i * 60.0)
+
+    after = Target.from_dict(config, before.to_dict())
+    after.record_command(LIGHT, "C16", {"brightness": 128}, 0.0, now=10_000.0)
+
+    assert after.observe_state_change(LIGHT, "C0", timestamp=20_000.0) is True
+    assert after.observe_state_change(LIGHT, "C1", timestamp=20_000.0) is False

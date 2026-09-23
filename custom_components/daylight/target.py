@@ -55,6 +55,13 @@ class _EntityState:
     """Per-entity bookkeeping."""
 
     last_commanded: dict[str, Any] = field(default_factory=dict)
+    """Attributes of the most recent command.
+
+    Kept for bookkeeping and persistence only: manual detection is decided by
+    context id and suppression window, never by comparing reported values
+    against these.
+    """
+
     own_context_ids: deque[str] = field(
         default_factory=lambda: deque(maxlen=OWN_CONTEXT_MAXLEN)
     )
@@ -63,6 +70,27 @@ class _EntityState:
     # Refreshed on every manual observation, so repeated hand-dimming keeps
     # pushing the auto-reset deadline out rather than expiring mid-fiddle.
     manual_since: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "last_commanded": dict(self.last_commanded),
+            "own_context_ids": list(self.own_context_ids),
+            "suppress_until": self.suppress_until,
+            "manual": self.manual,
+            "manual_since": self.manual_since,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> _EntityState:
+        return cls(
+            last_commanded=dict(data["last_commanded"]),
+            own_context_ids=deque(
+                data["own_context_ids"], maxlen=OWN_CONTEXT_MAXLEN
+            ),
+            suppress_until=data["suppress_until"],
+            manual=data["manual"],
+            manual_since=data["manual_since"],
+        )
 
 
 class Target:
@@ -138,3 +166,25 @@ class Target:
         """
         for entity_id in self._entities:
             self.clear_manual_flag(entity_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Dump per-entity state as JSON-serializable primitives.
+
+        Config is not included: the caller supplies it again to `from_dict`.
+        """
+        return {
+            "entities": {
+                entity_id: state.to_dict()
+                for entity_id, state in self._entities.items()
+            }
+        }
+
+    @classmethod
+    def from_dict(cls, config: TargetConfig, data: dict[str, Any]) -> Target:
+        """Rebuild a target from `to_dict` output plus a fresh config."""
+        target = cls(config)
+        target._entities = {
+            entity_id: _EntityState.from_dict(state)
+            for entity_id, state in data["entities"].items()
+        }
+        return target
