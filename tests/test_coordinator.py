@@ -184,6 +184,36 @@ async def test_next_sunset_does_not_skip_a_day_across_the_utc_date_boundary(
     assert state.next_sunset == correct
 
 
+async def test_next_sunrise_does_not_skip_a_day_for_eastern_observers(hass) -> None:
+    """Regression, mirror image of the sunset test above: for an observer
+    east of the prime meridian, the astral instant for a given date can land
+    on *date - 1 day* (UTC), not just date or date + 1.
+
+    Tokyo (`sunrise(date)` lands roughly at `date - 1, 19:26 UTC`, confirmed
+    directly against `astral.sun.sunrise`):
+      sunrise(6/20) = 2026-06-19 19:25 UTC
+      sunrise(6/21) = 2026-06-20 19:26 UTC
+      sunrise(6/22) = 2026-06-21 19:26 UTC
+
+    At `utc_now = 2026-06-21 20:00 UTC`, a `(-1, 0, +1)`-day scan around
+    `utc_now.date()` (6/21) queries dates 6/20, 6/21, 6/22 -> all three
+    instants above, all already in the past relative to `utc_now`. The real
+    next sunrise, `sunrise(6/23)`, is outside that window and never found.
+    """
+    settings = _curve_settings(
+        astral_observer=astral.Observer(
+            latitude=35.6762, longitude=139.6503, elevation=0
+        )
+    )
+    coordinator = DayCoordinator(hass, settings)
+    dt = datetime.datetime(2026, 6, 21, 20, 0, tzinfo=UTC)
+
+    state = coordinator.compute_day_state(dt)
+
+    assert state.next_sunrise == settings.sun.sunrise(datetime.date(2026, 6, 23))
+    assert state.next_sunrise > dt
+
+
 async def test_async_update_data_computes_fresh_state_from_dt_util_utcnow(
     hass, monkeypatch: pytest.MonkeyPatch
 ) -> None:

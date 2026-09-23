@@ -89,18 +89,19 @@ class DayCoordinator(DataUpdateCoordinator[DayState]):
 
         `event_fn` (`SunEvents.sunrise`/`.sunset`) is indexed by *date*, but
         the instant it returns can land on a different UTC calendar date than
-        the date it was queried with (e.g. an evening sunset local to a
-        timezone west of UTC lands after midnight UTC, on the next day). A
-        naive "look up today's, roll forward a day if it's already past"
-        can therefore skip the real next occurrence: today's date-indexed
-        event may already be tomorrow (UTC), while yesterday's date-indexed
-        event -- never checked -- is the one still ahead. Scanning the
-        surrounding three days and taking the earliest strictly-future
-        candidate is immune to that.
+        the date it was queried with: for an observer west of the prime
+        meridian the instant can land a day *after* the queried date (e.g. an
+        evening sunset crossing UTC midnight); for one east of it, a day
+        *before* (e.g. Tokyo's sunrise lands around 19:26 UTC the day
+        before). A naive "look up today's, roll forward a day if it's
+        already past" can therefore skip the real next occurrence in either
+        direction. Scanning the surrounding four days (one day back, two
+        ahead) and taking the earliest strictly-future candidate is immune
+        to that in both directions.
         """
         candidates = (
             event_fn(utc_now.date() + datetime.timedelta(days=offset))
-            for offset in (-1, 0, 1)
+            for offset in (-1, 0, 1, 2)
         )
         return min(candidate for candidate in candidates if candidate > utc_now)
 
