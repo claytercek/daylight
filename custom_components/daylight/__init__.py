@@ -54,8 +54,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         frontend_url_path="daylight-preview",
         webcomponent_name="daylight-curve-preview-panel",
         module_url=_PANEL_URL_PATH,
-        sidebar_title="Daylight Preview",
-        sidebar_icon="mdi:sun-clock",
         require_admin=False,
     )
 

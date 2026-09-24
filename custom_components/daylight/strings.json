@@ -2,6 +2,7 @@
   "config": {
     "step": {
       "user": {
+        "description": "[Open the live curve preview](/daylight-preview) to see how these settings shape brightness and color temperature over 24 hours. Opening it closes this form, so note your values first.",
         "data": {
           "update_interval_seconds": "Update Interval Seconds"
         },
@@ -72,6 +73,7 @@
       },
       "step": {
         "init": {
+          "description": "[Open the live curve preview](/daylight-preview) to see how these settings shape brightness and color temperature over 24 hours. Opening it closes this form, so note your values first.",
           "data": {
             "entities": "Entities"
           },
