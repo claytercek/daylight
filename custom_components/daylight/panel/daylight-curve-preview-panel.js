@@ -96,6 +96,14 @@ class DaylightCurvePreviewPanel extends HTMLElement {
         width: 100%;
         height: 400px;
       }
+      daylight-curve-preview-panel .card-content {
+        padding: 16px;
+      }
+      daylight-curve-preview-panel .chart-error {
+        color: #b00020;
+        margin-top: 8px;
+        font-size: 13px;
+      }
       @media (min-width: 1100px) {
         daylight-curve-preview-panel .panel-grid {
           grid-template-columns: minmax(320px, 480px) 1fr;
@@ -122,23 +130,32 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     chartContainer.id = "chart-container";
     this._chartContainer = chartContainer;
 
+    const card = document.createElement("ha-card");
+    card.header = "Curve Preview";
+
+    const cardContent = document.createElement("div");
+    cardContent.className = "card-content";
+
     const legend = document.createElement("div");
     legend.className = "chart-legend";
     legend.innerHTML =
       '<span style="color:#e69500;">■</span> Brightness (%)' +
       "&nbsp;&nbsp;" +
       '<span style="color:#1e88e5;">■</span> Color temp (K)';
-    chartContainer.appendChild(legend);
+    cardContent.appendChild(legend);
 
     const canvas = document.createElement("canvas");
     this._chartCanvas = canvas;
-    chartContainer.appendChild(canvas);
+    cardContent.appendChild(canvas);
 
     const chartErrorMessage = document.createElement("div");
     chartErrorMessage.className = "chart-error";
     chartErrorMessage.style.display = "none";
     this._chartErrorMessage = chartErrorMessage;
-    chartContainer.appendChild(chartErrorMessage);
+    cardContent.appendChild(chartErrorMessage);
+
+    card.appendChild(cardContent);
+    chartContainer.appendChild(card);
 
     grid.appendChild(chartContainer);
     wrapper.appendChild(grid);
@@ -318,18 +335,71 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const width = this._chartDisplayWidth || canvas.clientWidth;
     const height = this._chartDisplayHeight || canvas.clientHeight;
-    const padding = 8; // per-side margins come in slice B, leave as-is for now
-    const plotWidth = width - padding * 2;
-    const plotHeight = height - padding * 2;
+    const margin = { top: 16, right: 50, bottom: 28, left: 50 };
+    const plotWidth = width - margin.left - margin.right;
+    const plotHeight = height - margin.top - margin.bottom;
 
     const xForIndex = (index) =>
-      padding + (points.length > 1 ? (index / (points.length - 1)) * plotWidth : 0);
+      margin.left + (points.length > 1 ? (index / (points.length - 1)) * plotWidth : 0);
 
-    const yForBrightness = (value) => padding + plotHeight - (value / 100) * plotHeight;
+    const yForBrightness = (value) => margin.top + plotHeight - (value / 100) * plotHeight;
 
     const tempRange = colorTempMax - colorTempMin || 1;
     const yForColorTemp = (value) =>
-      padding + plotHeight - ((value - colorTempMin) / tempRange) * plotHeight;
+      margin.top + plotHeight - ((value - colorTempMin) / tempRange) * plotHeight;
+
+    const firstTime = new Date(points[0].utc_time).getTime();
+    const lastTime = new Date(points[points.length - 1].utc_time).getTime();
+
+    // Horizontal gridlines at 5 evenly spaced heights; each height gets a
+    // left-axis brightness-% tick (amber, matches that series) and a
+    // right-axis color-temp-K tick (blue, matches that series) computed
+    // independently, since the two series have unrelated scales.
+    const GRID_LINE_COUNT = 4;
+    ctx.save();
+    ctx.font = "10px sans-serif";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i <= GRID_LINE_COUNT; i++) {
+      const frac = i / GRID_LINE_COUNT;
+      const y = margin.top + frac * plotHeight;
+
+      ctx.beginPath();
+      ctx.strokeStyle = "#e0e0e0";
+      ctx.lineWidth = 1;
+      ctx.moveTo(margin.left, y);
+      ctx.lineTo(margin.left + plotWidth, y);
+      ctx.stroke();
+
+      const brightnessValue = Math.round(100 * (1 - frac));
+      ctx.fillStyle = "#e69500";
+      ctx.textAlign = "right";
+      ctx.fillText(`${brightnessValue}%`, margin.left - 6, y);
+
+      const colorTempValue = Math.round(colorTempMax - frac * (colorTempMax - colorTempMin));
+      ctx.fillStyle = "#1e88e5";
+      ctx.textAlign = "left";
+      ctx.fillText(`${colorTempValue}K`, margin.left + plotWidth + 6, y);
+    }
+    ctx.restore();
+
+    // X-axis time-of-day ticks at 5 evenly spaced points across the sampled
+    // window (quarter-window spacing -- 6h apart for the panel's current
+    // 24h/96-point window, but this stays correct if that window ever
+    // changes since it's fraction-of-range, not a hardcoded hour count).
+    const X_TICK_COUNT = 4;
+    ctx.save();
+    ctx.fillStyle = "#666";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (let i = 0; i <= X_TICK_COUNT; i++) {
+      const frac = i / X_TICK_COUNT;
+      const x = margin.left + frac * plotWidth;
+      const tickTime = new Date(firstTime + frac * (lastTime - firstTime));
+      const label = tickTime.toLocaleTimeString([], { hour: "numeric", hour12: true });
+      ctx.fillText(label, x, margin.top + plotHeight + 6);
+    }
+    ctx.restore();
 
     const drawSeries = (valueKey, yFor, strokeStyle) => {
       ctx.beginPath();
@@ -350,23 +420,20 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     drawSeries("brightness_pct", yForBrightness, "#e69500");
     drawSeries("color_temp_kelvin", yForColorTemp, "#1e88e5");
 
-    const firstTime = new Date(points[0].utc_time).getTime();
-    const lastTime = new Date(points[points.length - 1].utc_time).getTime();
-
     const drawSunMarker = (isoString, label, labelY) => {
       if (!isoString) return;
       const targetTime = new Date(isoString).getTime();
       const fraction = (targetTime - firstTime) / (lastTime - firstTime);
       if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return;
 
-      const x = padding + fraction * plotWidth;
+      const x = margin.left + fraction * plotWidth;
 
       ctx.save();
       ctx.strokeStyle = "#888";
       ctx.setLineDash([4, 4]);
       ctx.beginPath();
-      ctx.moveTo(x, padding);
-      ctx.lineTo(x, padding + plotHeight);
+      ctx.moveTo(x, margin.top);
+      ctx.lineTo(x, margin.top + plotHeight);
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -376,8 +443,8 @@ class DaylightCurvePreviewPanel extends HTMLElement {
       ctx.restore();
     };
 
-    drawSunMarker(sunrise, "Sunrise", padding + 10);
-    drawSunMarker(sunset, "Sunset", padding + 22);
+    drawSunMarker(sunrise, "Sunrise", margin.top + 10);
+    drawSunMarker(sunset, "Sunset", margin.top + 22);
   }
 
   _renderForm() {
