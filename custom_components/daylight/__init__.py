@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import datetime
+import pathlib
 
 import astral
+from homeassistant.components import panel_custom
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -17,6 +20,10 @@ from .http import PreviewFieldsView, SampleCurveView
 
 PLATFORMS = (Platform.SWITCH, Platform.SENSOR)
 
+_PANEL_JS_NAME = "daylight-curve-preview-panel.js"
+_PANEL_JS_PATH = pathlib.Path(__file__).parent / "panel" / _PANEL_JS_NAME
+_PANEL_URL_PATH = f"/daylight_panel/{_PANEL_JS_NAME}"
+
 
 def _parse_time(value: str | None) -> datetime.time | None:
     """Parse an `"HH:MM:SS"` entry-data value, passing `None` through."""
@@ -26,15 +33,32 @@ def _parse_time(value: str | None) -> datetime.time | None:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the domain-level curve-preview HTTP views.
+    """Register the domain-level curve-preview HTTP views and panel.
 
-    Not tied to any config entry -- the preview endpoints have no hub state
-    of their own, so they're registered once here rather than per-entry.
-    `http` is declared in manifest.json's `dependencies`, so `hass.http` is
-    guaranteed to exist by the time this runs.
+    Not tied to any config entry -- the preview endpoints and panel have no
+    hub state of their own, so they're registered once here rather than
+    per-entry. `http` and `panel_custom` are declared in manifest.json's
+    `dependencies`, so `hass.http` is guaranteed to exist and `panel_custom`
+    guaranteed to be set up by the time this runs.
     """
     hass.http.register_view(SampleCurveView())
     hass.http.register_view(PreviewFieldsView())
+
+    # cache_headers=False: the panel JS is still actively being built, so
+    # dev iteration shouldn't fight a cached placeholder.
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig(_PANEL_URL_PATH, str(_PANEL_JS_PATH), False)]
+    )
+    await panel_custom.async_register_panel(
+        hass,
+        frontend_url_path="daylight-preview",
+        webcomponent_name="daylight-curve-preview-panel",
+        module_url=_PANEL_URL_PATH,
+        sidebar_title="Daylight Preview",
+        sidebar_icon="mdi:sun-clock",
+        require_admin=False,
+    )
+
     return True
 
 
