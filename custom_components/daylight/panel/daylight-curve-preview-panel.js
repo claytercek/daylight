@@ -78,11 +78,32 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     style.textContent = `
       daylight-curve-preview-panel .panel-wrapper {
         padding: 24px;
-        max-width: 800px;
+        max-width: 1400px;
+        margin: 0 auto;
         box-sizing: border-box;
+      }
+      daylight-curve-preview-panel .panel-grid {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 24px;
+        align-items: start;
       }
       daylight-curve-preview-panel #chart-container {
         margin-top: 24px;
+      }
+      daylight-curve-preview-panel canvas {
+        display: block;
+        width: 100%;
+        height: 400px;
+      }
+      @media (min-width: 1100px) {
+        daylight-curve-preview-panel .panel-grid {
+          grid-template-columns: minmax(320px, 480px) 1fr;
+        }
+        daylight-curve-preview-panel #chart-container {
+          position: sticky;
+          top: 24px;
+        }
       }
     `;
     this.appendChild(style);
@@ -90,9 +111,12 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     const wrapper = document.createElement("div");
     wrapper.className = "panel-wrapper";
 
+    const grid = document.createElement("div");
+    grid.className = "panel-grid";
+
     this._formContainer = document.createElement("div");
     this._formContainer.textContent = "Loading…";
-    wrapper.appendChild(this._formContainer);
+    grid.appendChild(this._formContainer);
 
     const chartContainer = document.createElement("div");
     chartContainer.id = "chart-container";
@@ -107,11 +131,6 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     chartContainer.appendChild(legend);
 
     const canvas = document.createElement("canvas");
-    canvas.width = 600;
-    canvas.height = 300;
-    canvas.style.width = "100%";
-    canvas.style.maxWidth = "600px";
-    canvas.style.height = "auto";
     this._chartCanvas = canvas;
     chartContainer.appendChild(canvas);
 
@@ -121,9 +140,15 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._chartErrorMessage = chartErrorMessage;
     chartContainer.appendChild(chartErrorMessage);
 
-    wrapper.appendChild(chartContainer);
+    grid.appendChild(chartContainer);
+    wrapper.appendChild(grid);
 
     this.appendChild(wrapper);
+
+    this._resizeObserver = new ResizeObserver(() => this._resizeCanvas());
+    this._resizeObserver.observe(canvas);
+
+    this._resizeCanvas();
   }
 
   set hass(hass) {
@@ -230,14 +255,54 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     }
   }
 
+  // Reads the CSS-determined display size of the canvas and syncs its
+  // device-pixel backing store to match, accounting for devicePixelRatio so
+  // strokes stay crisp on high-DPI screens. Called from the ResizeObserver
+  // whenever the canvas's layout size changes, and once up front from
+  // connectedCallback. Bails out before layout has settled (size still 0).
+  _resizeCanvas() {
+    const canvas = this._chartCanvas;
+    const displayWidth = canvas.clientWidth;
+    const displayHeight = canvas.clientHeight;
+    if (displayWidth === 0 || displayHeight === 0) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const targetWidth = Math.round(displayWidth * dpr);
+    const targetHeight = Math.round(displayHeight * dpr);
+    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+    }
+
+    this._chartDisplayWidth = displayWidth;
+    this._chartDisplayHeight = displayHeight;
+
+    this._redraw();
+  }
+
+  // Redraws using the most recent successful _drawChart args, without
+  // re-fetching from the server. Used by the ResizeObserver so a viewport
+  // resize doesn't trigger a network round-trip.
+  _redraw() {
+    if (this._lastDrawArgs) {
+      this._drawChart(...this._lastDrawArgs);
+    } else {
+      this._clearChart();
+    }
+  }
+
   _clearChart() {
-    const ctx = this._chartCanvas.getContext("2d");
-    ctx.clearRect(0, 0, this._chartCanvas.width, this._chartCanvas.height);
+    const canvas = this._chartCanvas;
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
   }
 
   // Draws both series (brightness and color temp) over the same x-axis.
   // Replaces the previous chart contents; does not append.
   _drawChart(points, colorTempMin, colorTempMax, sunrise, sunset) {
+    this._lastDrawArgs = [points, colorTempMin, colorTempMax, sunrise, sunset];
+
     this._clearChart();
 
     if (!points || points.length === 0) {
@@ -249,9 +314,13 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
     const canvas = this._chartCanvas;
     const ctx = canvas.getContext("2d");
-    const padding = 8;
-    const plotWidth = canvas.width - padding * 2;
-    const plotHeight = canvas.height - padding * 2;
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const width = this._chartDisplayWidth || canvas.clientWidth;
+    const height = this._chartDisplayHeight || canvas.clientHeight;
+    const padding = 8; // per-side margins come in slice B, leave as-is for now
+    const plotWidth = width - padding * 2;
+    const plotHeight = height - padding * 2;
 
     const xForIndex = (index) =>
       padding + (points.length > 1 ? (index / (points.length - 1)) * plotWidth : 0);
