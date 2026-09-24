@@ -11,6 +11,8 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._chartCanvas = null;
     this._chartErrorMessage = null;
     this._points = null;
+    this._chartDebounceTimer = null;
+    this._chartRequestId = 0;
     this._data = {
       min_brightness_pct: 1,
       max_brightness_pct: 100,
@@ -118,10 +120,14 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
   // Fetches a fresh curve sample from the server and redraws the chart.
   // Safe to call multiple times: each call replaces the previous chart
-  // contents rather than appending to them. Currently only called once,
-  // from the initial fields fetch, but is written as a reusable unit
-  // because a future slice will call it again on field edits.
+  // contents rather than appending to them. Called once from the initial
+  // fields fetch, and again from the debounced value-changed handler on
+  // every field edit. Captures this._chartRequestId on entry so that if a
+  // newer call starts before this one's response arrives, the stale
+  // response bails out silently instead of drawing or showing an error.
   async _fetchAndDrawChart() {
+    const requestId = ++this._chartRequestId;
+
     const payload = {
       min_brightness_pct: this._data.min_brightness_pct,
       max_brightness_pct: this._data.max_brightness_pct,
@@ -133,11 +139,13 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
     try {
       const response = await this._hass.callApi("POST", "daylight/sample_curve", payload);
+      if (requestId !== this._chartRequestId) return;
       this._points = response.points;
       this._chartErrorMessage.style.display = "none";
       this._chartErrorMessage.textContent = "";
       this._drawChart(this._points, payload.min_color_temp_kelvin, payload.max_color_temp_kelvin);
     } catch (error) {
+      if (requestId !== this._chartRequestId) return;
       this._points = null;
       console.error("Failed to fetch curve sample:", error);
       this._clearChart();
@@ -209,6 +217,11 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._formElement.addEventListener("value-changed", (event) => {
       this._data = event.detail.value;
       this._formElement.data = this._data;
+
+      clearTimeout(this._chartDebounceTimer);
+      this._chartDebounceTimer = setTimeout(() => {
+        this._fetchAndDrawChart();
+      }, 300);
     });
 
     this._formContainer.appendChild(this._formElement);
