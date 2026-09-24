@@ -30,6 +30,7 @@ import voluptuous as vol
 from aiohttp import web
 from homeassistant.components.http import KEY_HASS, HomeAssistantView
 from homeassistant.components.http.data_validator import RequestDataValidator
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -61,6 +62,12 @@ from .config_flow import (
     CONF_SUNRISE_TIME,
     CONF_SUNSET_OFFSET_MINUTES,
     CONF_SUNSET_TIME,
+    SECTION_BRIGHTNESS,
+    SECTION_BRIGHTNESS_CURVE,
+    SECTION_COLOR_TEMP,
+    SECTION_SUNRISE,
+    SECTION_SUNSET,
+    _flatten_sections,
     _int_box,
 )
 from .curve_preview import DEFAULT_NUM_POINTS, sample_curve
@@ -94,49 +101,90 @@ def _to_time(value: str | None) -> datetime.time | None:
     return None if value is None else cv.time(value)
 
 
-# Mirrors config_flow.HUB_SCHEMA's sun-timing/brightness-curve fields plus
-# TARGET_SCHEMA's brightness/color-temp range -- the full field set
+# Mirrors config_flow.HUB_SCHEMA's sun-timing/brightness-curve sections plus
+# TARGET_SCHEMA's brightness/color-temp range sections -- the full field set
 # `CurveSettings` and `sample_curve` need, not just the latter's bounds. Uses
-# the identical selector constructs those schemas do, so a generic
-# selector-aware form renderer (see `PreviewFieldsView`) gets the same
-# sliders/pickers the config flow's own form does.
+# the identical selector constructs and `section()` groupings those schemas
+# do, so a generic selector-aware form renderer (see `PreviewFieldsView`)
+# gets the same sliders/pickers, grouped into the same expandable sections,
+# the config flow's own form does. `custom_serializer` (passed to
+# `to_field_list` below) already knows how to serialize `section()` markers,
+# so no changes are needed there -- only the grouping of fields here.
 _FORM_FIELDS: dict[Any, Any] = {
-    vol.Optional(CONF_SUNRISE_TIME): TimeSelector(),
-    vol.Optional(CONF_MIN_SUNRISE_TIME): TimeSelector(),
-    vol.Optional(CONF_MAX_SUNRISE_TIME): TimeSelector(),
-    vol.Optional(CONF_SUNRISE_OFFSET_MINUTES, default=0): _int_box(),
-    vol.Optional(CONF_SUNSET_TIME): TimeSelector(),
-    vol.Optional(CONF_MIN_SUNSET_TIME): TimeSelector(),
-    vol.Optional(CONF_MAX_SUNSET_TIME): TimeSelector(),
-    vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): _int_box(),
-    vol.Optional(CONF_BRIGHTNESS_MODE, default="default"): SelectSelector(
-        SelectSelectorConfig(
-            options=_BRIGHTNESS_MODE_OPTIONS,
-            translation_key=CONF_BRIGHTNESS_MODE,
+    vol.Optional(SECTION_SUNRISE, default=dict): section(
+        vol.Schema(
+            {
+                vol.Optional(CONF_SUNRISE_TIME): TimeSelector(),
+                vol.Optional(CONF_MIN_SUNRISE_TIME): TimeSelector(),
+                vol.Optional(CONF_MAX_SUNRISE_TIME): TimeSelector(),
+                vol.Optional(CONF_SUNRISE_OFFSET_MINUTES, default=0): _int_box(),
+            }
         )
     ),
-    vol.Optional(
-        CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
-        default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
-    ): _int_box(),
-    vol.Optional(
-        CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES,
-        default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
-    ): _int_box(),
-    vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
-        NumberSelector(
-            NumberSelectorConfig(min=1, max=100, mode=NumberSelectorMode.BOX)
-        ),
-        vol.Coerce(int),
+    vol.Optional(SECTION_SUNSET, default=dict): section(
+        vol.Schema(
+            {
+                vol.Optional(CONF_SUNSET_TIME): TimeSelector(),
+                vol.Optional(CONF_MIN_SUNSET_TIME): TimeSelector(),
+                vol.Optional(CONF_MAX_SUNSET_TIME): TimeSelector(),
+                vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): _int_box(),
+            }
+        )
     ),
-    vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
-        NumberSelector(
-            NumberSelectorConfig(min=1, max=100, mode=NumberSelectorMode.BOX)
-        ),
-        vol.Coerce(int),
+    vol.Optional(SECTION_BRIGHTNESS_CURVE, default=dict): section(
+        vol.Schema(
+            {
+                vol.Optional(
+                    CONF_BRIGHTNESS_MODE, default="default"
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=_BRIGHTNESS_MODE_OPTIONS,
+                        translation_key=CONF_BRIGHTNESS_MODE,
+                    )
+                ),
+                vol.Optional(
+                    CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
+                    default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
+                ): _int_box(),
+                vol.Optional(
+                    CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES,
+                    default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
+                ): _int_box(),
+            }
+        )
     ),
-    vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): _int_box(),
-    vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): _int_box(),
+    # Required, not `Optional(..., default=dict)`: each holds a required
+    # field with no default, same as `config_flow.TARGET_SCHEMA`.
+    vol.Required(SECTION_BRIGHTNESS): section(
+        vol.Schema(
+            {
+                vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            min=1, max=100, mode=NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Coerce(int),
+                ),
+                vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
+                    NumberSelector(
+                        NumberSelectorConfig(
+                            min=1, max=100, mode=NumberSelectorMode.BOX
+                        )
+                    ),
+                    vol.Coerce(int),
+                ),
+            }
+        )
+    ),
+    vol.Required(SECTION_COLOR_TEMP): section(
+        vol.Schema(
+            {
+                vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): _int_box(),
+                vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): _int_box(),
+            }
+        )
+    ),
 }
 
 SAMPLE_CURVE_SCHEMA = vol.Schema(
@@ -164,6 +212,11 @@ class SampleCurveView(HomeAssistantView):
     @RequestDataValidator(SAMPLE_CURVE_SCHEMA)
     async def post(self, request: web.Request, data: dict[str, Any]) -> web.Response:
         """Build `CurveSettings` from `data` and return sampled points."""
+        # `data` arrives nested by section (`SAMPLE_CURVE_SCHEMA`'s shape);
+        # flatten it back to the flat shape the rest of this method expects,
+        # same as `config_flow` does with its own section-shaped submissions.
+        data = _flatten_sections(SAMPLE_CURVE_SCHEMA, data)
+
         hass = request.app[KEY_HASS]
 
         # Mirrors __init__.py's real hub construction: the observer always
@@ -215,7 +268,22 @@ class SampleCurveView(HomeAssistantView):
         except ValueError as err:
             return self.json_message(str(err), HTTPStatus.BAD_REQUEST)
 
-        return self.json({"points": [dataclasses.asdict(p) for p in points]})
+        # Known limitation: only the start date's sunrise/sunset are
+        # resolved, using `start`'s calendar date in the hub's own timezone
+        # (not the request's UTC offset). A window that crosses midnight
+        # (via `start`/`num_points`) will not surface the second day's sun
+        # times.
+        local_start = start.astimezone(timezone)
+        sunrise = curve_settings.sun.sunrise(local_start)
+        sunset = curve_settings.sun.sunset(local_start)
+
+        return self.json(
+            {
+                "points": [dataclasses.asdict(p) for p in points],
+                "sunrise": sunrise.isoformat(),
+                "sunset": sunset.isoformat(),
+            }
+        )
 
 
 class PreviewFieldsView(HomeAssistantView):

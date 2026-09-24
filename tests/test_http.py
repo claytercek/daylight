@@ -8,12 +8,17 @@ client always initiates the request, so these are `HomeAssistantView`s
 `hass_client` fixture rather than `hass_ws_client`.
 """
 
+import dataclasses
 import datetime
 from unittest.mock import patch
 
+import astral
 from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
 
+from custom_components.daylight.color_and_brightness import CurveSettings
 from custom_components.daylight.const import DOMAIN
+from custom_components.daylight.curve_preview import sample_curve
 from custom_components.daylight.http import (
     _CONF_NUM_POINTS,
     _CONF_START,
@@ -23,11 +28,11 @@ from custom_components.daylight.http import (
 _URL = "/api/daylight/sample_curve"
 _PREVIEW_FIELDS_URL = "/api/daylight/preview_fields"
 
+# Nested/sectioned shape: `brightness`/`color_temp` are `Required` sections
+# (each holds a required field with no default), so every payload needs them.
 _VALID_PAYLOAD = {
-    "min_brightness_pct": 1,
-    "max_brightness_pct": 100,
-    "min_color_temp_kelvin": 2000,
-    "max_color_temp_kelvin": 5500,
+    "brightness": {"min_brightness_pct": 1, "max_brightness_pct": 100},
+    "color_temp": {"min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 5500},
 }
 
 
@@ -53,11 +58,13 @@ async def test_sample_curve_returns_points_for_full_field_set(
         _URL,
         json={
             **_VALID_PAYLOAD,
-            "sunrise_time": "06:30:00",
-            "sunset_offset_minutes": -5,
-            "brightness_mode": "linear",
-            "brightness_mode_time_dark_minutes": 30,
-            "brightness_mode_time_light_minutes": 60,
+            "sunrise": {"sunrise_time": "06:30:00"},
+            "sunset": {"sunset_offset_minutes": -5},
+            "brightness_curve": {
+                "brightness_mode": "linear",
+                "brightness_mode_time_dark_minutes": 30,
+                "brightness_mode_time_light_minutes": 60,
+            },
             "start": "2026-06-21T00:00:00+00:00",
             "num_points": 4,
         },
@@ -71,6 +78,10 @@ async def test_sample_curve_returns_points_for_full_field_set(
     for point in points:
         assert 1 <= point["brightness_pct"] <= 100
         assert 2000 <= point["color_temp_kelvin"] <= 5500
+
+    # Both new top-level keys are ISO 8601 datetime strings.
+    datetime.datetime.fromisoformat(body["sunrise"])
+    datetime.datetime.fromisoformat(body["sunset"])
 
 
 async def test_sample_curve_defaults_start_to_now(
@@ -90,15 +101,33 @@ async def test_sample_curve_defaults_start_to_now(
     assert body["points"][0]["utc_time"] == frozen_now.isoformat()
 
 
-async def test_sample_curve_rejects_missing_required_field(
+async def test_sample_curve_rejects_missing_required_section(
     enable_custom_integrations, hass, hass_config_dir, hass_client
 ) -> None:
     """The voluptuous schema is the system-boundary validation."""
     await _setup(hass, enable_custom_integrations, hass_config_dir)
     client = await hass_client()
 
-    payload = dict(_VALID_PAYLOAD)
-    del payload["min_brightness_pct"]
+    payload = {"color_temp": _VALID_PAYLOAD["color_temp"]}
+
+    resp = await client.post(_URL, json=payload)
+
+    assert resp.status == 400
+
+
+async def test_sample_curve_rejects_missing_required_field_within_section(
+    enable_custom_integrations, hass, hass_config_dir, hass_client
+) -> None:
+    """A required section present but missing one of its required fields is
+    still a 400, not just an absent section entirely.
+    """
+    await _setup(hass, enable_custom_integrations, hass_config_dir)
+    client = await hass_client()
+
+    payload = {
+        "brightness": {"max_brightness_pct": 100},
+        "color_temp": _VALID_PAYLOAD["color_temp"],
+    }
 
     resp = await client.post(_URL, json=payload)
 
@@ -120,8 +149,10 @@ async def test_sample_curve_invalid_sun_timing_returns_400_not_500(
         _URL,
         json={
             **_VALID_PAYLOAD,
-            "sunrise_time": "02:15:00",
-            "sunrise_offset_minutes": -1440,
+            "sunrise": {
+                "sunrise_time": "02:15:00",
+                "sunrise_offset_minutes": -1440,
+            },
             "start": "2026-06-21T00:00:00+00:00",
             "num_points": 1,
         },
@@ -132,10 +163,88 @@ async def test_sample_curve_invalid_sun_timing_returns_400_not_500(
     assert "not in the expected order" in body["message"]
 
 
-async def test_preview_fields_returns_a_field_per_curve_shape_key(
+async def test_sample_curve_nested_payload_matches_flat_computation(
     enable_custom_integrations, hass, hass_config_dir, hass_client
 ) -> None:
-    """`<ha-form>`'s field list, keyed by name, for a not-yet-built frontend panel."""
+    """Regression guard for the flatten step (`_flatten_sections`): a
+    nested/sectioned payload exercising all five sections must produce the
+    same points as calling `sample_curve` directly with the equivalent flat
+    values -- i.e. what the old flat POST shape would have computed.
+    """
+    await _setup(hass, enable_custom_integrations, hass_config_dir)
+    client = await hass_client()
+
+    start = datetime.datetime(2026, 6, 21, tzinfo=datetime.UTC)
+
+    resp = await client.post(
+        _URL,
+        json={
+            "sunrise": {"sunrise_time": "06:30:00"},
+            "sunset": {"sunset_offset_minutes": -5},
+            "brightness_curve": {
+                "brightness_mode": "linear",
+                "brightness_mode_time_dark_minutes": 30,
+                "brightness_mode_time_light_minutes": 60,
+            },
+            "brightness": {"min_brightness_pct": 10, "max_brightness_pct": 90},
+            "color_temp": {
+                "min_color_temp_kelvin": 2200,
+                "max_color_temp_kelvin": 6500,
+            },
+            "start": start.isoformat(),
+            "num_points": 4,
+        },
+    )
+
+    assert resp.status == 200
+    body = await resp.json()
+
+    astral_observer = astral.Observer(
+        latitude=hass.config.latitude,
+        longitude=hass.config.longitude,
+        elevation=hass.config.elevation,
+    )
+    timezone = await dt_util.async_get_time_zone(hass.config.time_zone)
+    curve_settings = CurveSettings(
+        name="preview",
+        astral_observer=astral_observer,
+        timezone=timezone,
+        sunrise_time=datetime.time(6, 30),
+        min_sunrise_time=None,
+        max_sunrise_time=None,
+        sunset_time=None,
+        min_sunset_time=None,
+        max_sunset_time=None,
+        sunrise_offset=datetime.timedelta(minutes=0),
+        sunset_offset=datetime.timedelta(minutes=-5),
+        brightness_mode="linear",
+        brightness_mode_time_dark=datetime.timedelta(minutes=30),
+        brightness_mode_time_light=datetime.timedelta(minutes=60),
+    )
+    expected_points = sample_curve(
+        curve_settings,
+        start=start,
+        min_brightness_pct=10,
+        max_brightness_pct=90,
+        min_color_temp_kelvin=2200,
+        max_color_temp_kelvin=6500,
+        num_points=4,
+    )
+
+    assert body["points"] == [dataclasses.asdict(p) for p in expected_points]
+    # sunrise/sunset are resolved for `start`'s calendar date in the hub's
+    # own timezone, not the request's UTC offset.
+    local_start = start.astimezone(timezone)
+    assert body["sunrise"] == curve_settings.sun.sunrise(local_start).isoformat()
+    assert body["sunset"] == curve_settings.sun.sunset(local_start).isoformat()
+
+
+async def test_preview_fields_returns_expandable_sections(
+    enable_custom_integrations, hass, hass_config_dir, hass_client
+) -> None:
+    """`<ha-form>`'s field list groups the curve-shape fields into the same
+    `section()`-backed expandable groups `config_flow`'s own forms use.
+    """
     await _setup(hass, enable_custom_integrations, hass_config_dir)
     client = await hass_client()
 
@@ -143,7 +252,43 @@ async def test_preview_fields_returns_a_field_per_curve_shape_key(
 
     assert resp.status == 200
     fields = await resp.json()
-    assert all("name" in field and "selector" in field for field in fields)
+
+    sections = {field["name"]: field for field in fields}
+    assert set(sections) == {
+        "sunrise",
+        "sunset",
+        "brightness_curve",
+        "brightness",
+        "color_temp",
+    }
+    for entry in sections.values():
+        assert entry["type"] == "expandable"
+
+    def names(section_name: str) -> set[str]:
+        return {field["name"] for field in sections[section_name]["schema"]}
+
+    assert names("sunrise") == {
+        "sunrise_time",
+        "min_sunrise_time",
+        "max_sunrise_time",
+        "sunrise_offset_minutes",
+    }
+    assert names("sunset") == {
+        "sunset_time",
+        "min_sunset_time",
+        "max_sunset_time",
+        "sunset_offset_minutes",
+    }
+    assert names("brightness_curve") == {
+        "brightness_mode",
+        "brightness_mode_time_dark_minutes",
+        "brightness_mode_time_light_minutes",
+    }
+    assert names("brightness") == {"min_brightness_pct", "max_brightness_pct"}
+    assert names("color_temp") == {
+        "min_color_temp_kelvin",
+        "max_color_temp_kelvin",
+    }
 
 
 async def test_preview_fields_matches_sample_curve_schema_minus_window_fields(
@@ -157,7 +302,8 @@ async def test_preview_fields_matches_sample_curve_schema_minus_window_fields(
 
     `start`/`num_points` are endpoint-specific sampling-window knobs, not
     part of the curve shape a form would edit, so they're excluded from both
-    sides of the comparison.
+    sides of the comparison. The comparison is at the section-name level:
+    both sides are keyed by section, not by the fields nested inside them.
     """
     await _setup(hass, enable_custom_integrations, hass_config_dir)
     client = await hass_client()
