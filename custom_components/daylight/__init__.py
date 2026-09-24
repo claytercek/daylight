@@ -13,7 +13,7 @@ from homeassistant.util import dt as dt_util
 
 from .color_and_brightness import CurveSettings
 from .coordinator import DayCoordinator
-from .http import SampleCurveView
+from .http import PreviewFieldsView, SampleCurveView
 
 PLATFORMS = (Platform.SWITCH, Platform.SENSOR)
 
@@ -26,14 +26,15 @@ def _parse_time(value: str | None) -> datetime.time | None:
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the domain-level curve-preview HTTP view.
+    """Register the domain-level curve-preview HTTP views.
 
-    Not tied to any config entry -- the preview endpoint has no hub state of
-    its own, so it's registered once here rather than per-entry. `http` is
-    declared in manifest.json's `dependencies`, so `hass.http` is guaranteed
-    to exist by the time this runs.
+    Not tied to any config entry -- the preview endpoints have no hub state
+    of their own, so they're registered once here rather than per-entry.
+    `http` is declared in manifest.json's `dependencies`, so `hass.http` is
+    guaranteed to exist by the time this runs.
     """
     hass.http.register_view(SampleCurveView())
+    hass.http.register_view(PreviewFieldsView())
     return True
 
 

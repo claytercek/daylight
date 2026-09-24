@@ -1,8 +1,10 @@
-"""Tests for the `/api/daylight/sample_curve` HTTP preview endpoint.
+"""Tests for the `/api/daylight/sample_curve` and `/api/daylight/preview_fields`
+HTTP preview endpoints.
 
-A plain request/response endpoint for a not-yet-built frontend panel: the
-client always initiates the request, so this is a `HomeAssistantView`
-(`custom_components.daylight.http.SampleCurveView`), tested with the
+Plain request/response endpoints for a not-yet-built frontend panel: the
+client always initiates the request, so these are `HomeAssistantView`s
+(`custom_components.daylight.http.SampleCurveView` /
+`custom_components.daylight.http.PreviewFieldsView`), tested with the
 `hass_client` fixture rather than `hass_ws_client`.
 """
 
@@ -12,8 +14,14 @@ from unittest.mock import patch
 from homeassistant.setup import async_setup_component
 
 from custom_components.daylight.const import DOMAIN
+from custom_components.daylight.http import (
+    _CONF_NUM_POINTS,
+    _CONF_START,
+    SAMPLE_CURVE_SCHEMA,
+)
 
 _URL = "/api/daylight/sample_curve"
+_PREVIEW_FIELDS_URL = "/api/daylight/preview_fields"
 
 _VALID_PAYLOAD = {
     "min_brightness_pct": 1,
@@ -122,3 +130,44 @@ async def test_sample_curve_invalid_sun_timing_returns_400_not_500(
     assert resp.status == 400
     body = await resp.json()
     assert "not in the expected order" in body["message"]
+
+
+async def test_preview_fields_returns_a_field_per_curve_shape_key(
+    enable_custom_integrations, hass, hass_config_dir, hass_client
+) -> None:
+    """`<ha-form>`'s field list, keyed by name, for a not-yet-built frontend panel."""
+    await _setup(hass, enable_custom_integrations, hass_config_dir)
+    client = await hass_client()
+
+    resp = await client.get(_PREVIEW_FIELDS_URL)
+
+    assert resp.status == 200
+    fields = await resp.json()
+    assert all("name" in field and "selector" in field for field in fields)
+
+
+async def test_preview_fields_matches_sample_curve_schema_minus_window_fields(
+    enable_custom_integrations, hass, hass_config_dir, hass_client
+) -> None:
+    """Drift guard: both endpoints serialize/validate the same
+    `SAMPLE_CURVE_SCHEMA`, so this should hold structurally. It exists to
+    catch a future accidental divergence -- e.g. someone adding a field to
+    one endpoint's logic without updating the schema -- not to reconcile two
+    hand-kept field sets.
+
+    `start`/`num_points` are endpoint-specific sampling-window knobs, not
+    part of the curve shape a form would edit, so they're excluded from both
+    sides of the comparison.
+    """
+    await _setup(hass, enable_custom_integrations, hass_config_dir)
+    client = await hass_client()
+
+    resp = await client.get(_PREVIEW_FIELDS_URL)
+    fields = await resp.json()
+
+    field_names = {field["name"] for field in fields}
+    schema_keys = {str(key) for key in SAMPLE_CURVE_SCHEMA.schema} - {
+        _CONF_START,
+        _CONF_NUM_POINTS,
+    }
+    assert field_names == schema_keys

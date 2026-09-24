@@ -1,17 +1,21 @@
 """HTTP API for a live daylight curve preview.
 
-`SampleCurveView` is a plain request/response endpoint for a not-yet-built
-frontend panel: the client always initiates ("user dragged a slider, give me
-points for these values"), the server never pushes anything unprompted, so
-this is a `HomeAssistantView`, not a websocket command. Nothing persists --
-this only computes and returns points, the same "scratchpad" preview
+`SampleCurveView` and `PreviewFieldsView` are plain request/response
+endpoints for a not-yet-built frontend panel: the client always initiates
+("user dragged a slider, give me points for these values" / "what fields
+should I render"), the server never pushes anything unprompted, so these are
+`HomeAssistantView`s, not websocket commands. Nothing persists -- this only
+computes and returns points, the same "scratchpad" preview
 `curve_preview.sample_curve` was built for.
 
 This is the system boundary where untrusted browser input arrives: the
 voluptuous schema below is the validation, mirroring the real hub/target
 config flow's field set (`config_flow.HUB_SCHEMA`/`TARGET_SCHEMA`) via the
-same `CONF_*` constants so the two can't drift apart. `sample_curve` itself
-stays pure and unvalidated.
+same `CONF_*` constants *and* the same `selector.*` constructs, so the two
+can't drift apart -- and so `PreviewFieldsView` can serialize this schema
+straight into the field list Home Assistant's own generic form renderer
+(`<ha-form>`) consumes, with no field-specific frontend JS. `sample_curve`
+itself stays pure and unvalidated.
 """
 
 from __future__ import annotations
@@ -27,7 +31,16 @@ from aiohttp import web
 from homeassistant.components.http import KEY_HASS, HomeAssistantView
 from homeassistant.components.http.data_validator import RequestDataValidator
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    TimeSelector,
+)
 from homeassistant.util import dt as dt_util
+from probatio import to_field_list
 
 from .color_and_brightness import CurveSettings
 from .config_flow import (
@@ -48,6 +61,7 @@ from .config_flow import (
     CONF_SUNRISE_TIME,
     CONF_SUNSET_OFFSET_MINUTES,
     CONF_SUNSET_TIME,
+    _int_box,
 )
 from .curve_preview import DEFAULT_NUM_POINTS, sample_curve
 
@@ -68,44 +82,77 @@ def _tz_aware_datetime(value: Any) -> datetime.datetime:
     return parsed
 
 
+def _to_time(value: str | None) -> datetime.time | None:
+    """Convert a `TimeSelector`-validated string into a `datetime.time`.
+
+    `TimeSelector.__call__` only checks that `value` parses as a time (via
+    `cv.time`) and then returns the original string unchanged -- the same
+    "store the string, parse it at the point of use" split `config_flow`
+    uses between its schema and `__init__.py`'s `_parse_time`. `cv.time`
+    itself has no `None` passthrough, so that case is handled here.
+    """
+    return None if value is None else cv.time(value)
+
+
 # Mirrors config_flow.HUB_SCHEMA's sun-timing/brightness-curve fields plus
 # TARGET_SCHEMA's brightness/color-temp range -- the full field set
-# `CurveSettings` and `sample_curve` need, not just the latter's bounds.
+# `CurveSettings` and `sample_curve` need, not just the latter's bounds. Uses
+# the identical selector constructs those schemas do, so a generic
+# selector-aware form renderer (see `PreviewFieldsView`) gets the same
+# sliders/pickers the config flow's own form does.
+_FORM_FIELDS: dict[Any, Any] = {
+    vol.Optional(CONF_SUNRISE_TIME): TimeSelector(),
+    vol.Optional(CONF_MIN_SUNRISE_TIME): TimeSelector(),
+    vol.Optional(CONF_MAX_SUNRISE_TIME): TimeSelector(),
+    vol.Optional(CONF_SUNRISE_OFFSET_MINUTES, default=0): _int_box(),
+    vol.Optional(CONF_SUNSET_TIME): TimeSelector(),
+    vol.Optional(CONF_MIN_SUNSET_TIME): TimeSelector(),
+    vol.Optional(CONF_MAX_SUNSET_TIME): TimeSelector(),
+    vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): _int_box(),
+    vol.Optional(CONF_BRIGHTNESS_MODE, default="default"): SelectSelector(
+        SelectSelectorConfig(
+            options=_BRIGHTNESS_MODE_OPTIONS,
+            translation_key=CONF_BRIGHTNESS_MODE,
+        )
+    ),
+    vol.Optional(
+        CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
+        default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
+    ): _int_box(),
+    vol.Optional(
+        CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES,
+        default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
+    ): _int_box(),
+    vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
+        NumberSelector(
+            NumberSelectorConfig(min=1, max=100, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Coerce(int),
+    ),
+    vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
+        NumberSelector(
+            NumberSelectorConfig(min=1, max=100, mode=NumberSelectorMode.BOX)
+        ),
+        vol.Coerce(int),
+    ),
+    vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): _int_box(),
+    vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): _int_box(),
+}
+
 SAMPLE_CURVE_SCHEMA = vol.Schema(
     {
-        vol.Optional(CONF_SUNRISE_TIME): cv.time,
-        vol.Optional(CONF_MIN_SUNRISE_TIME): cv.time,
-        vol.Optional(CONF_MAX_SUNRISE_TIME): cv.time,
-        vol.Optional(CONF_SUNRISE_OFFSET_MINUTES, default=0): vol.Coerce(int),
-        vol.Optional(CONF_SUNSET_TIME): cv.time,
-        vol.Optional(CONF_MIN_SUNSET_TIME): cv.time,
-        vol.Optional(CONF_MAX_SUNSET_TIME): cv.time,
-        vol.Optional(CONF_SUNSET_OFFSET_MINUTES, default=0): vol.Coerce(int),
-        vol.Optional(CONF_BRIGHTNESS_MODE, default="default"): vol.In(
-            _BRIGHTNESS_MODE_OPTIONS
-        ),
-        vol.Optional(
-            CONF_BRIGHTNESS_MODE_TIME_DARK_MINUTES,
-            default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
-        ): vol.Coerce(int),
-        vol.Optional(
-            CONF_BRIGHTNESS_MODE_TIME_LIGHT_MINUTES,
-            default=_DEFAULT_BRIGHTNESS_MODE_TIME_MINUTES,
-        ): vol.Coerce(int),
-        vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=100)
-        ),
-        vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=100)
-        ),
-        vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): vol.Coerce(int),
-        vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): vol.Coerce(int),
+        **_FORM_FIELDS,
         vol.Optional(_CONF_START): _tz_aware_datetime,
         vol.Optional(_CONF_NUM_POINTS, default=DEFAULT_NUM_POINTS): vol.All(
             vol.Coerce(int), vol.Range(min=1)
         ),
     }
 )
+
+# `start`/`num_points` are endpoint-specific sampling-window knobs, not part
+# of the curve shape a form would edit, so `PreviewFieldsView` serializes
+# only this subset of `SAMPLE_CURVE_SCHEMA`.
+_FORM_FIELDS_SCHEMA = vol.Schema(_FORM_FIELDS)
 
 
 class SampleCurveView(HomeAssistantView):
@@ -134,12 +181,12 @@ class SampleCurveView(HomeAssistantView):
             name="preview",
             astral_observer=astral_observer,
             timezone=timezone,
-            sunrise_time=data.get(CONF_SUNRISE_TIME),
-            min_sunrise_time=data.get(CONF_MIN_SUNRISE_TIME),
-            max_sunrise_time=data.get(CONF_MAX_SUNRISE_TIME),
-            sunset_time=data.get(CONF_SUNSET_TIME),
-            min_sunset_time=data.get(CONF_MIN_SUNSET_TIME),
-            max_sunset_time=data.get(CONF_MAX_SUNSET_TIME),
+            sunrise_time=_to_time(data.get(CONF_SUNRISE_TIME)),
+            min_sunrise_time=_to_time(data.get(CONF_MIN_SUNRISE_TIME)),
+            max_sunrise_time=_to_time(data.get(CONF_MAX_SUNRISE_TIME)),
+            sunset_time=_to_time(data.get(CONF_SUNSET_TIME)),
+            min_sunset_time=_to_time(data.get(CONF_MIN_SUNSET_TIME)),
+            max_sunset_time=_to_time(data.get(CONF_MAX_SUNSET_TIME)),
             sunrise_offset=datetime.timedelta(
                 minutes=data[CONF_SUNRISE_OFFSET_MINUTES]
             ),
@@ -169,3 +216,24 @@ class SampleCurveView(HomeAssistantView):
             return self.json_message(str(err), HTTPStatus.BAD_REQUEST)
 
         return self.json({"points": [dataclasses.asdict(p) for p in points]})
+
+
+class PreviewFieldsView(HomeAssistantView):
+    """Describe `SampleCurveView`'s curve-shape fields for a generic form.
+
+    Serializes `_FORM_FIELDS_SCHEMA` -- the same selector-built schema
+    `SampleCurveView` validates against, minus the `start`/`num_points`
+    sampling-window knobs -- into the field-list shape `<ha-form>` (Home
+    Assistant's own generic schema-driven form renderer) consumes. A
+    not-yet-built frontend panel can then render sliders/pickers for this
+    endpoint with no field-specific JS of its own.
+    """
+
+    url = "/api/daylight/preview_fields"
+    name = "api:daylight:preview_fields"
+
+    async def get(self, request: web.Request) -> web.Response:
+        """Return the `<ha-form>`-compatible field list."""
+        return self.json(
+            to_field_list(_FORM_FIELDS_SCHEMA, custom_serializer=cv.custom_serializer)
+        )
