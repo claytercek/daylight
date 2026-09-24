@@ -122,9 +122,6 @@ class DaylightCurvePreviewPanel extends HTMLElement {
         gap: 24px;
         align-items: start;
       }
-      daylight-curve-preview-panel #chart-container {
-        margin-top: 24px;
-      }
       daylight-curve-preview-panel canvas {
         display: block;
         width: 100%;
@@ -464,7 +461,7 @@ class DaylightCurvePreviewPanel extends HTMLElement {
       const y = margin.top + frac * plotHeight;
 
       ctx.beginPath();
-      ctx.strokeStyle = "#e0e0e0";
+      ctx.strokeStyle = "#f2f2f2";
       ctx.lineWidth = 1;
       ctx.moveTo(margin.left, y);
       ctx.lineTo(margin.left + plotWidth, y);
@@ -546,19 +543,22 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     drawSunMarker(sunrise, "Sunrise", margin.top + 10);
     drawSunMarker(sunset, "Sunset", margin.top + 22);
 
-    // Hover crosshair + tooltip + "preview lamp". With no active hover,
-    // falls back to the point nearest "now" (if "now" falls inside the
-    // sampled window) so the lamp/tooltip aren't just blank on page load.
+    // "Preview lamp" always reflects the point nearest "now" (if "now" falls
+    // inside the sampled window) so it isn't just blank on page load, even
+    // when nothing is hovered. The crosshair + tooltip, in contrast, only
+    // appear while actively hovering -- they'd look stuck otherwise.
     const now = Date.now();
     const nowIndex =
       now >= firstTime && now <= lastTime
         ? Math.round(((now - firstTime) / (lastTime - firstTime)) * (points.length - 1))
         : null;
-    const activeIndex =
+    const lampIndex =
       this._hoverIndex !== null && this._hoverIndex !== undefined ? this._hoverIndex : nowIndex;
-    const activePoint = activeIndex !== null ? points[activeIndex] : null;
+    this._updateLamp(lampIndex !== null ? points[lampIndex] : null);
 
-    this._updateLamp(activePoint);
+    const activeIndex = this._hoverIndex;
+    const activePoint =
+      activeIndex !== null && activeIndex !== undefined ? points[activeIndex] : null;
 
     if (activePoint) {
       const x = xForIndex(activeIndex);
