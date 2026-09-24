@@ -1,3 +1,29 @@
+const SECTION_TITLES = {
+  sunrise: "Sunrise",
+  sunset: "Sunset",
+  brightness_curve: "Brightness Curve",
+  brightness: "Brightness",
+  color_temp: "Color Temperature"
+};
+
+const FIELD_LABELS = {
+  sunrise_time: "Sunrise Time",
+  min_sunrise_time: "Minimum Sunrise Time",
+  max_sunrise_time: "Maximum Sunrise Time",
+  sunrise_offset_minutes: "Sunrise Offset Minutes",
+  sunset_time: "Sunset Time",
+  min_sunset_time: "Minimum Sunset Time",
+  max_sunset_time: "Maximum Sunset Time",
+  sunset_offset_minutes: "Sunset Offset Minutes",
+  brightness_mode: "Brightness Mode",
+  brightness_mode_time_dark_minutes: "Brightness Ramp Time When Dark",
+  brightness_mode_time_light_minutes: "Brightness Ramp Time When Light",
+  min_brightness_pct: "Minimum Brightness Percent",
+  max_brightness_pct: "Maximum Brightness Percent",
+  min_color_temp_kelvin: "Minimum Color Temperature Kelvin",
+  max_color_temp_kelvin: "Maximum Color Temperature Kelvin"
+};
+
 class DaylightCurvePreviewPanel extends HTMLElement {
   constructor() {
     super();
@@ -14,11 +40,11 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._chartDebounceTimer = null;
     this._chartRequestId = 0;
     this._data = {
-      min_brightness_pct: 1,
-      max_brightness_pct: 100,
-      min_color_temp_kelvin: 2000,
-      max_color_temp_kelvin: 5500
+      brightness: { min_brightness_pct: 1, max_brightness_pct: 100 },
+      color_temp: { min_color_temp_kelvin: 2000, max_color_temp_kelvin: 5500 }
     };
+    this._sunrise = null;
+    this._sunset = null;
   }
 
   // Builds an ISO-8601 string for local midnight today with an explicit
@@ -48,7 +74,21 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     if (this._initialized) return;
     this._initialized = true;
 
+    const style = document.createElement("style");
+    style.textContent = `
+      daylight-curve-preview-panel .panel-wrapper {
+        padding: 24px;
+        max-width: 800px;
+        box-sizing: border-box;
+      }
+      daylight-curve-preview-panel #chart-container {
+        margin-top: 24px;
+      }
+    `;
+    this.appendChild(style);
+
     const wrapper = document.createElement("div");
+    wrapper.className = "panel-wrapper";
 
     this._formContainer = document.createElement("div");
     this._formContainer.textContent = "Loading…";
@@ -103,10 +143,23 @@ class DaylightCurvePreviewPanel extends HTMLElement {
       const schema = await this._hass.callApi("GET", "daylight/preview_fields");
       this._schema = schema;
 
-      // Seed initial data with defaults from schema
-      for (const field of schema) {
-        if (field.default !== undefined && !(field.name in this._data)) {
-          this._data[field.name] = field.default;
+      // Seed initial data with defaults from schema. Each top-level entry is
+      // an expandable section; recurse into its nested schema to seed
+      // defaults for the leaf fields, without clobbering existing values.
+      for (const section of schema) {
+        if (section.type !== "expandable") continue;
+
+        section.title = SECTION_TITLES[section.name] || section.name;
+
+        if (!(section.name in this._data)) {
+          this._data[section.name] = {};
+        }
+        const sectionData = this._data[section.name];
+
+        for (const field of section.schema) {
+          if (field.default !== undefined && !(field.name in sectionData)) {
+            sectionData[field.name] = field.default;
+          }
         }
       }
 
@@ -128,23 +181,45 @@ class DaylightCurvePreviewPanel extends HTMLElement {
   async _fetchAndDrawChart() {
     const requestId = ++this._chartRequestId;
 
+    // Drop null/undefined leaf values from each section: optional
+    // time-selector fields the user never touched may end up null, and the
+    // backend's TimeSelector() will 400 on an explicit null, but an absent
+    // key is fine.
+    const cleanedData = {};
+    for (const [sectionName, sectionValue] of Object.entries(this._data)) {
+      const cleanedSection = {};
+      if (sectionValue && typeof sectionValue === "object") {
+        for (const [key, value] of Object.entries(sectionValue)) {
+          if (value !== null && value !== undefined) {
+            cleanedSection[key] = value;
+          }
+        }
+      }
+      cleanedData[sectionName] = cleanedSection;
+    }
+
     const payload = {
+      ...cleanedData,
       num_points: 96,
       start: DaylightCurvePreviewPanel._buildLocalMidnightISOString()
     };
-    for (const [key, value] of Object.entries(this._data)) {
-      if (value !== null && value !== undefined) {
-        payload[key] = value;
-      }
-    }
 
     try {
       const response = await this._hass.callApi("POST", "daylight/sample_curve", payload);
       if (requestId !== this._chartRequestId) return;
       this._points = response.points;
+      this._sunrise = response.sunrise;
+      this._sunset = response.sunset;
       this._chartErrorMessage.style.display = "none";
       this._chartErrorMessage.textContent = "";
-      this._drawChart(this._points, payload.min_color_temp_kelvin, payload.max_color_temp_kelvin);
+      const colorTempBounds = payload.color_temp || {};
+      this._drawChart(
+        this._points,
+        colorTempBounds.min_color_temp_kelvin,
+        colorTempBounds.max_color_temp_kelvin,
+        response.sunrise,
+        response.sunset
+      );
     } catch (error) {
       if (requestId !== this._chartRequestId) return;
       this._points = null;
@@ -162,7 +237,7 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
   // Draws both series (brightness and color temp) over the same x-axis.
   // Replaces the previous chart contents; does not append.
-  _drawChart(points, colorTempMin, colorTempMax) {
+  _drawChart(points, colorTempMin, colorTempMax, sunrise, sunset) {
     this._clearChart();
 
     if (!points || points.length === 0) {
@@ -205,6 +280,35 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
     drawSeries("brightness_pct", yForBrightness, "#e69500");
     drawSeries("color_temp_kelvin", yForColorTemp, "#1e88e5");
+
+    const firstTime = new Date(points[0].utc_time).getTime();
+    const lastTime = new Date(points[points.length - 1].utc_time).getTime();
+
+    const drawSunMarker = (isoString, label, labelY) => {
+      if (!isoString) return;
+      const targetTime = new Date(isoString).getTime();
+      const fraction = (targetTime - firstTime) / (lastTime - firstTime);
+      if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return;
+
+      const x = padding + fraction * plotWidth;
+
+      ctx.save();
+      ctx.strokeStyle = "#888";
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, padding);
+      ctx.lineTo(x, padding + plotHeight);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "#888";
+      ctx.font = "10px sans-serif";
+      ctx.fillText(label, x + 2, labelY);
+      ctx.restore();
+    };
+
+    drawSunMarker(sunrise, "Sunrise", padding + 10);
+    drawSunMarker(sunset, "Sunset", padding + 22);
   }
 
   _renderForm() {
@@ -214,6 +318,7 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._formElement.hass = this._hass;
     this._formElement.schema = this._schema;
     this._formElement.data = this._data;
+    this._formElement.computeLabel = (schema) => FIELD_LABELS[schema.name] || schema.name;
 
     this._formElement.addEventListener("value-changed", (event) => {
       this._data = event.detail.value;
