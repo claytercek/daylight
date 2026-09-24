@@ -24,7 +24,39 @@ const FIELD_LABELS = {
   max_color_temp_kelvin: "Maximum Color Temperature Kelvin"
 };
 
+// Approximates the sRGB color of blackbody radiation at a given color
+// temperature (Tanner Helland's piecewise fit) -- used for the "preview
+// lamp" swatch. Deliberately not physically exact; close enough for a
+// visual readout of "warmer" vs "cooler".
+function kelvinToRgb(kelvin) {
+  const temp = kelvin / 100;
+  let r;
+  let g;
+  let b;
+
+  if (temp <= 66) {
+    r = 255;
+    g = 99.4708025861 * Math.log(temp) - 161.1195681661;
+  } else {
+    r = 329.698727446 * Math.pow(temp - 60, -0.1332047592);
+    g = 288.1221695283 * Math.pow(temp - 60, -0.0755148492);
+  }
+
+  if (temp >= 66) {
+    b = 255;
+  } else if (temp <= 19) {
+    b = 0;
+  } else {
+    b = 138.5177312231 * Math.log(temp - 10) - 305.0447927307;
+  }
+
+  const clamp = (value) => Math.max(0, Math.min(255, Math.round(value)));
+  return { r: clamp(r), g: clamp(g), b: clamp(b) };
+}
+
 class DaylightCurvePreviewPanel extends HTMLElement {
+  static CHART_MARGIN = { top: 16, right: 50, bottom: 28, left: 50 };
+
   constructor() {
     super();
     this._hass = null;
@@ -45,6 +77,8 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     };
     this._sunrise = null;
     this._sunset = null;
+    this._hoverIndex = null;
+    this._lampSwatch = null;
   }
 
   // Builds an ISO-8601 string for local midnight today with an explicit
@@ -104,6 +138,21 @@ class DaylightCurvePreviewPanel extends HTMLElement {
         margin-top: 8px;
         font-size: 13px;
       }
+      daylight-curve-preview-panel .chart-legend {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      daylight-curve-preview-panel .lamp-swatch {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.2);
+        background-color: #ddd;
+        margin-left: auto;
+        flex-shrink: 0;
+      }
       @media (min-width: 1100px) {
         daylight-curve-preview-panel .panel-grid {
           grid-template-columns: minmax(320px, 480px) 1fr;
@@ -142,11 +191,25 @@ class DaylightCurvePreviewPanel extends HTMLElement {
       '<span style="color:#e69500;">■</span> Brightness (%)' +
       "&nbsp;&nbsp;" +
       '<span style="color:#1e88e5;">■</span> Color temp (K)';
+
+    this._lampSwatch = document.createElement("div");
+    this._lampSwatch.className = "lamp-swatch";
+    legend.appendChild(this._lampSwatch);
+
     cardContent.appendChild(legend);
 
     const canvas = document.createElement("canvas");
     this._chartCanvas = canvas;
     cardContent.appendChild(canvas);
+
+    canvas.addEventListener("mousemove", (event) => {
+      this._hoverIndex = this._indexForOffsetX(event.offsetX);
+      this._redraw();
+    });
+    canvas.addEventListener("mouseleave", () => {
+      this._hoverIndex = null;
+      this._redraw();
+    });
 
     const chartErrorMessage = document.createElement("div");
     chartErrorMessage.className = "chart-error";
@@ -308,11 +371,48 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     }
   }
 
+  // Maps a mousemove event's offsetX (CSS pixels relative to the canvas's
+  // own box) to the nearest sampled point index. Shares CHART_MARGIN with
+  // _drawChart so hit-testing always matches what's actually drawn.
+  _indexForOffsetX(offsetX) {
+    if (!this._points || this._points.length === 0) return null;
+
+    const margin = DaylightCurvePreviewPanel.CHART_MARGIN;
+    const width = this._chartDisplayWidth || this._chartCanvas.clientWidth;
+    const plotWidth = width - margin.left - margin.right;
+    if (plotWidth <= 0) return null;
+
+    const fraction = (offsetX - margin.left) / plotWidth;
+    const clamped = Math.max(0, Math.min(1, fraction));
+    return Math.round(clamped * (this._points.length - 1));
+  }
+
   _clearChart() {
     const canvas = this._chartCanvas;
     const ctx = canvas.getContext("2d");
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Renders the "preview lamp" swatch in the legend: an approximate sRGB
+  // color for the hovered (or, with no hover, the "now") point, computed
+  // from its color_temp_kelvin via kelvinToRgb, dimmed by its
+  // brightness_pct. Not a live HA light entity -- just a visual readout of
+  // the point already being shown by the crosshair/tooltip.
+  _updateLamp(point) {
+    if (!this._lampSwatch) return;
+
+    if (!point) {
+      this._lampSwatch.style.backgroundColor = "#ddd";
+      this._lampSwatch.title = "";
+      return;
+    }
+
+    const { r, g, b } = kelvinToRgb(point.color_temp_kelvin);
+    const factor = Math.max(0.15, point.brightness_pct / 100);
+    const dim = (channel) => Math.round(channel * factor);
+    this._lampSwatch.style.backgroundColor = `rgb(${dim(r)}, ${dim(g)}, ${dim(b)})`;
+    this._lampSwatch.title = `${point.brightness_pct}% · ${point.color_temp_kelvin}K`;
   }
 
   // Draws both series (brightness and color temp) over the same x-axis.
@@ -335,7 +435,7 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const width = this._chartDisplayWidth || canvas.clientWidth;
     const height = this._chartDisplayHeight || canvas.clientHeight;
-    const margin = { top: 16, right: 50, bottom: 28, left: 50 };
+    const margin = DaylightCurvePreviewPanel.CHART_MARGIN;
     const plotWidth = width - margin.left - margin.right;
     const plotHeight = height - margin.top - margin.bottom;
 
@@ -445,6 +545,73 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
     drawSunMarker(sunrise, "Sunrise", margin.top + 10);
     drawSunMarker(sunset, "Sunset", margin.top + 22);
+
+    // Hover crosshair + tooltip + "preview lamp". With no active hover,
+    // falls back to the point nearest "now" (if "now" falls inside the
+    // sampled window) so the lamp/tooltip aren't just blank on page load.
+    const now = Date.now();
+    const nowIndex =
+      now >= firstTime && now <= lastTime
+        ? Math.round(((now - firstTime) / (lastTime - firstTime)) * (points.length - 1))
+        : null;
+    const activeIndex =
+      this._hoverIndex !== null && this._hoverIndex !== undefined ? this._hoverIndex : nowIndex;
+    const activePoint = activeIndex !== null ? points[activeIndex] : null;
+
+    this._updateLamp(activePoint);
+
+    if (activePoint) {
+      const x = xForIndex(activeIndex);
+
+      ctx.save();
+      ctx.strokeStyle = "#333";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, margin.top);
+      ctx.lineTo(x, margin.top + plotHeight);
+      ctx.stroke();
+
+      ctx.fillStyle = "#e69500";
+      ctx.beginPath();
+      ctx.arc(x, yForBrightness(activePoint.brightness_pct), 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "#1e88e5";
+      ctx.beginPath();
+      ctx.arc(x, yForColorTemp(activePoint.color_temp_kelvin), 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      const timeLabel = new Date(activePoint.utc_time).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit"
+      });
+      const lines = [timeLabel, `${activePoint.brightness_pct}%`, `${activePoint.color_temp_kelvin}K`];
+      ctx.font = "11px sans-serif";
+      const lineHeight = 14;
+      const boxPadding = 6;
+      const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width));
+      const boxWidth = textWidth + boxPadding * 2;
+      const boxHeight = lines.length * lineHeight + boxPadding * 2;
+      let boxX = x + 8;
+      if (boxX + boxWidth > margin.left + plotWidth) {
+        boxX = x - 8 - boxWidth;
+      }
+      const boxY = margin.top + 4;
+
+      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+      ctx.strokeStyle = "#ccc";
+      ctx.lineWidth = 1;
+      ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+      ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+      ctx.fillStyle = "#333";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      lines.forEach((line, i) => {
+        ctx.fillText(line, boxX + boxPadding, boxY + boxPadding + i * lineHeight);
+      });
+      ctx.restore();
+    }
   }
 
   _renderForm() {
