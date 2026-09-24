@@ -8,10 +8,12 @@ import astral
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
 from .color_and_brightness import CurveSettings
 from .coordinator import DayCoordinator
+from .http import SampleCurveView
 
 PLATFORMS = (Platform.SWITCH, Platform.SENSOR)
 
@@ -21,6 +23,18 @@ def _parse_time(value: str | None) -> datetime.time | None:
     if value is None:
         return None
     return datetime.time.fromisoformat(value)
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the domain-level curve-preview HTTP view.
+
+    Not tied to any config entry -- the preview endpoint has no hub state of
+    its own, so it's registered once here rather than per-entry. `http` is
+    declared in manifest.json's `dependencies`, so `hass.http` is guaranteed
+    to exist by the time this runs.
+    """
+    hass.http.register_view(SampleCurveView())
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
