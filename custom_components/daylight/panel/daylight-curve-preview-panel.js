@@ -129,13 +129,14 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     const requestId = ++this._chartRequestId;
 
     const payload = {
-      min_brightness_pct: this._data.min_brightness_pct,
-      max_brightness_pct: this._data.max_brightness_pct,
-      min_color_temp_kelvin: this._data.min_color_temp_kelvin,
-      max_color_temp_kelvin: this._data.max_color_temp_kelvin,
       num_points: 96,
       start: DaylightCurvePreviewPanel._buildLocalMidnightISOString()
     };
+    for (const [key, value] of Object.entries(this._data)) {
+      if (value !== null && value !== undefined) {
+        payload[key] = value;
+      }
+    }
 
     try {
       const response = await this._hass.callApi("POST", "daylight/sample_curve", payload);
