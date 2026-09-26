@@ -107,10 +107,10 @@ async def test_sample_curve_defaults_start_to_home_assistant_midnight(
     )
 
 
-async def test_sample_curve_rejects_missing_required_section(
+async def test_sample_curve_defaults_missing_range_section(
     enable_custom_integrations, hass, hass_config_dir, hass_client
 ) -> None:
-    """The voluptuous schema is the system-boundary validation."""
+    """Shared target ranges now supply defaults."""
     await _setup(hass, enable_custom_integrations, hass_config_dir)
     client = await hass_client()
 
@@ -118,15 +118,13 @@ async def test_sample_curve_rejects_missing_required_section(
 
     resp = await client.post(_URL, json=payload)
 
-    assert resp.status == 400
+    assert resp.status == 200
 
 
-async def test_sample_curve_rejects_missing_required_field_within_section(
+async def test_sample_curve_defaults_missing_range_field(
     enable_custom_integrations, hass, hass_config_dir, hass_client
 ) -> None:
-    """A required section present but missing one of its required fields is
-    still a 400, not just an absent section entirely.
-    """
+    """An untouched range field uses its default."""
     await _setup(hass, enable_custom_integrations, hass_config_dir)
     client = await hass_client()
 
@@ -137,7 +135,7 @@ async def test_sample_curve_rejects_missing_required_field_within_section(
 
     resp = await client.post(_URL, json=payload)
 
-    assert resp.status == 400
+    assert resp.status == 200
 
 
 async def test_sample_curve_invalid_sun_timing_returns_400_not_500(

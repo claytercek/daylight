@@ -19,27 +19,17 @@ from homeassistant.helpers.entity import EntityCategory
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight import sensor
-from custom_components.daylight.color_and_brightness import CurveSettings
 from custom_components.daylight.const import DOMAIN
 from custom_components.daylight.coordinator import DayCoordinator, DayState
+from custom_components.daylight.schedule import Schedule
+from custom_components.daylight.solar import SunEvents
 
 UTC = datetime.UTC
 _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)
 
 
-def _curve_settings() -> CurveSettings:
-    return CurveSettings(
-        name="test",
-        astral_observer=_NYC_OBSERVER,
-        sunrise_time=None,
-        min_sunrise_time=None,
-        max_sunrise_time=None,
-        sunset_time=None,
-        min_sunset_time=None,
-        max_sunset_time=None,
-        brightness_mode_time_dark=datetime.timedelta(minutes=45),
-        brightness_mode_time_light=datetime.timedelta(minutes=45),
-    )
+def _curve_settings() -> Schedule:
+    return Schedule(SunEvents(_NYC_OBSERVER))
 
 
 def _day_state(sun_position: float) -> DayState:

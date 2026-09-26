@@ -12,7 +12,15 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.data_entry_flow import section
 
-from custom_components.daylight.config_flow import HUB_SCHEMA, TARGET_SCHEMA
+from custom_components.daylight.config import TARGET_SCHEMA
+from custom_components.daylight.schedule_config import (
+    LENGTH_SCHEMA,
+    MODE_SCHEMA,
+    RUNTIME_SCHEMA,
+    SHAPE_SCHEMA,
+    anchor_schema,
+    endpoint_schema,
+)
 
 _COMPONENT_DIR = Path(__file__).parent.parent / "custom_components" / "daylight"
 _STRINGS_PATH = _COMPONENT_DIR / "strings.json"
@@ -46,8 +54,24 @@ def test_hub_schema_fields_have_strings() -> None:
     strings = json.loads(_STRINGS_PATH.read_text())
 
     _assert_step_has_strings(
-        HUB_SCHEMA, strings["config"]["step"]["user"], "config.step.user"
+        TARGET_SCHEMA, strings["config"]["step"]["user"], "config.step.user"
     )
+
+
+def test_schedule_forms_have_strings() -> None:
+    steps = json.loads(_STRINGS_PATH.read_text())["config"]["step"]
+    for name, schema in (
+        ("lengths", LENGTH_SCHEMA),
+        ("morning", MODE_SCHEMA),
+        ("evening", MODE_SCHEMA),
+        ("runtime", RUNTIME_SCHEMA),
+        ("shapes", SHAPE_SCHEMA),
+        ("anchor", anchor_schema("morning", "solar")),
+        ("anchor", anchor_schema("evening", "clock")),
+        ("endpoint", endpoint_schema("clock")),
+        ("endpoint", endpoint_schema("seasonal")),
+    ):
+        _assert_step_has_strings(schema, steps[name], f"config.step.{name}")
 
 
 def test_target_schema_fields_have_strings() -> None:

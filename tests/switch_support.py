@@ -9,21 +9,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight.const import DOMAIN
 from custom_components.daylight.coordinator import DayState
+from custom_components.daylight.schedule_config import default_hub_data
 
-_HUB_DATA = {
-    "sunrise_time": "06:30:00",
-    "min_sunrise_time": None,
-    "max_sunrise_time": None,
-    "sunset_time": None,
-    "min_sunset_time": None,
-    "max_sunset_time": None,
-    "sunrise_offset_minutes": 0,
-    "sunset_offset_minutes": 0,
-    "brightness_mode": "default",
-    "brightness_mode_time_dark_minutes": 45,
-    "brightness_mode_time_light_minutes": 45,
-    "update_interval_seconds": 90,
-}
+_HUB_DATA = default_hub_data()
 
 _TARGET_DATA = {
     "entities": ["light.kitchen"],
@@ -100,6 +88,7 @@ async def _setup(
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Hub",
+        version=2,
         data=_HUB_DATA,
         subentries_data=subentries,
     )
@@ -151,5 +140,3 @@ async def _tick(hass, entry, day_state=_DAY_STATE) -> None:
     """Push a fresh `DayState` through the coordinator, as a poll would."""
     entry.runtime_data.async_set_updated_data(day_state)
     await hass.async_block_till_done()
-
-

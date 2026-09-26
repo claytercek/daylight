@@ -1,11 +1,6 @@
-"""Tests for the daylight config/subentry flow.
+"""Drive native HA setup/reconfiguration: defaults, drafts, rules and saving."""
 
-Every test drives the flow the way HA itself does: `async_init` then
-`async_configure`, asserting on the returned `FlowResult`. `enable_custom_integrations`
-is required here (unlike the pure-logic test modules) because these tests go
-through `hass.config_entries`, which uses HA's loader-based discovery.
-"""
-
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
@@ -13,617 +8,358 @@ import voluptuous as vol
 from homeassistant.data_entry_flow import FlowResultType, section
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.daylight.config import TARGET_SCHEMA
 from custom_components.daylight.config_flow import (
     DaylightConfigFlow,
     TargetSubentryFlowHandler,
 )
 from custom_components.daylight.const import DOMAIN
+from custom_components.daylight.schedule_config import default_hub_data
 
-# The section-shaped dict a real target form submission produces...
-_TARGET_ADVANCED = {
-    "transition": 30.0,
-    "adapt_only_on_state_change": True,
-    "manual_control_reset_minutes": 15,
-    "separate_turn_on_commands": False,
-    "send_split_delay": 0.5,
-}
-_TARGET_INPUT = {
-    "targets": {"entity_id": ["light.kitchen", "light.den"]},
+TARGET_INPUT = {
+    "targets": {"entity_id": ["light.kitchen"]},
     "brightness": {"min_brightness_pct": 10, "max_brightness_pct": 100},
-    "color_temp": {"min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6500},
-    "advanced": _TARGET_ADVANCED,
+    "color_temp": {"min_color_temp_kelvin": 2500, "max_color_temp_kelvin": 4000},
 }
-# ...and the flat dict it is stored as, which `switch.py` reads directly.
-_TARGET_DATA = {
-    "entities": ["light.kitchen", "light.den"],
+TARGET_DATA = {
+    "entities": ["light.kitchen"],
     "areas": [],
     "min_brightness_pct": 10,
     "max_brightness_pct": 100,
-    "min_color_temp_kelvin": 2000,
-    "max_color_temp_kelvin": 6500,
-    "transition": 30.0,
-    "adapt_only_on_state_change": True,
-    "manual_control_reset_minutes": 15,
+    "min_color_temp_kelvin": 2500,
+    "max_color_temp_kelvin": 4000,
+    "transition": 0.0,
+    "adapt_only_on_state_change": False,
+    "manual_control_reset_minutes": 0,
     "separate_turn_on_commands": False,
-    "send_split_delay": 0.5,
+    "send_split_delay": 0.0,
 }
 
 
-async def test_hub_user_step_shows_form(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
+@pytest.fixture
+async def entry(hass, enable_custom_integrations, hass_config_dir):
     hass.config.config_dir = hass_config_dir
+    hass.config.latitude, hass.config.longitude = 40.7, -74
+    await hass.config.async_set_time_zone("America/New_York")
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=default_hub_data(),
+        version=2,
+        subentries_data=[
+            {
+                "data": TARGET_DATA,
+                "subentry_type": "target",
+                "title": "Kitchen",
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+    return entry
 
+
+async def configure(hass, result, **user_input):
+    return await hass.config_entries.flow.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+
+
+async def menu(hass, entry):
+    return await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
+    )
+
+
+async def choose(hass, result, step):
+    if step in {"customize", "shapes", "runtime"} and result["step_id"] == "menu":
+        result = await configure(hass, result, next_step_id="advanced")
+    return await configure(hass, result, next_step_id=step)
+
+
+async def test_setup_select_lights_and_accept_defaults(hass, entry):
+    with patch("custom_components.daylight.async_setup_entry", return_value=True):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": "user"}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "user"
+        result = await configure(hass, result, targets={"entity_id": ["light.kitchen"]})
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == default_hub_data()
+    created = result["result"]
+    assert created.version == 2
+    assert next(iter(created.subentries.values())).data == TARGET_DATA
+
+
+async def test_setup_requires_a_target(hass, entry):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
     )
+    result = await configure(hass, result, targets={})
+    assert result["errors"] == {"base": "target_required"}
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "user"
 
-
-async def test_hub_user_step_full_input_creates_entry(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """A fully-specified section-shaped input is stored as one flat dict."""
-    hass.config.config_dir = hass_config_dir
-    with patch(
-        "custom_components.daylight.async_setup_entry",
-        return_value=True,
-        create=True,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": "user"}
-        )
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={
-                "sunrise": {
-                    "sunrise_time": "07:00:00",
-                    "min_sunrise_time": "06:00:00",
-                    "max_sunrise_time": "08:00:00",
-                    "sunrise_offset_minutes": -15,
-                },
-                "sunset": {
-                    "sunset_time": "19:00:00",
-                    "min_sunset_time": "18:00:00",
-                    "max_sunset_time": "20:00:00",
-                    "sunset_offset_minutes": 30,
-                },
-                "brightness_curve": {
-                    "brightness_mode": "linear",
-                    "brightness_mode_time_dark_minutes": 60,
-                    "brightness_mode_time_light_minutes": 30,
-                },
-                "update_interval_seconds": 120,
-            },
-        )
-        await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["title"] == "Daylight"
-    assert result["data"] == {
-        "sunrise_time": "07:00:00",
-        "min_sunrise_time": "06:00:00",
-        "max_sunrise_time": "08:00:00",
-        "sunset_time": "19:00:00",
-        "min_sunset_time": "18:00:00",
-        "max_sunset_time": "20:00:00",
-        "sunrise_offset_minutes": -15,
-        "sunset_offset_minutes": 30,
-        "brightness_mode": "linear",
-        "brightness_mode_time_dark_minutes": 60,
-        "brightness_mode_time_light_minutes": 30,
-        "update_interval_seconds": 120,
+async def test_basic_edits_are_drafts_until_explicit_save(hass, entry):
+    original = deepcopy(dict(entry.data))
+    result = await menu(hass, entry)
+    assert result["type"] is FlowResultType.MENU
+    assert set(result["menu_options"]) == {
+        "morning",
+        "evening",
+        "lengths",
+        "advanced",
+        "save",
     }
-    assert result["result"].subentries == {}
-
-
-async def test_hub_user_step_omitted_time_overrides_are_none(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """Time overrides left blank in the form are stored as an explicit `None`."""
-    hass.config.config_dir = hass_config_dir
-    with patch(
-        "custom_components.daylight.async_setup_entry",
-        return_value=True,
-        create=True,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": "user"}
-        )
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={
-                "sunrise": {"sunrise_offset_minutes": 0},
-                "sunset": {"sunset_offset_minutes": 0},
-                "brightness_curve": {
-                    "brightness_mode": "default",
-                    "brightness_mode_time_dark_minutes": 45,
-                    "brightness_mode_time_light_minutes": 45,
-                },
-                "update_interval_seconds": 90,
-            },
-        )
-        await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {
-        "sunrise_time": None,
-        "min_sunrise_time": None,
-        "max_sunrise_time": None,
-        "sunset_time": None,
-        "min_sunset_time": None,
-        "max_sunset_time": None,
-        "sunrise_offset_minutes": 0,
-        "sunset_offset_minutes": 0,
-        "brightness_mode": "default",
-        "brightness_mode_time_dark_minutes": 45,
-        "brightness_mode_time_light_minutes": 45,
-        "update_interval_seconds": 90,
-    }
-
-
-async def test_hub_user_step_applies_schema_defaults(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """Keys omitted entirely (not just the time overrides) get their default."""
-    hass.config.config_dir = hass_config_dir
-    with patch(
-        "custom_components.daylight.async_setup_entry",
-        return_value=True,
-        create=True,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": "user"}
-        )
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={}
-        )
-        await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"]["sunrise_offset_minutes"] == 0
-    assert result["data"]["sunset_offset_minutes"] == 0
-    assert result["data"]["brightness_mode"] == "default"
-    assert result["data"]["brightness_mode_time_dark_minutes"] == 45
-    assert result["data"]["brightness_mode_time_light_minutes"] == 45
-    assert result["data"]["update_interval_seconds"] == 90
-
-
-async def test_hub_user_step_applies_defaults_of_an_absent_section(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """A section the user never touched still contributes its field defaults.
-
-    `__init__.py` reads every hub key unconditionally, so an omitted section
-    must not leave holes in the stored data.
-    """
-    hass.config.config_dir = hass_config_dir
-    with patch(
-        "custom_components.daylight.async_setup_entry",
-        return_value=True,
-        create=True,
-    ):
-        result = await hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": "user"}
-        )
-
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input={"sunrise": {"sunrise_time": "07:00:00"}},
-        )
-        await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {
-        "sunrise_time": "07:00:00",
-        "min_sunrise_time": None,
-        "max_sunrise_time": None,
-        "sunset_time": None,
-        "min_sunset_time": None,
-        "max_sunset_time": None,
-        "sunrise_offset_minutes": 0,
-        "sunset_offset_minutes": 0,
-        "brightness_mode": "default",
-        "brightness_mode_time_dark_minutes": 45,
-        "brightness_mode_time_light_minutes": 45,
-        "update_interval_seconds": 90,
-    }
-
-
-async def test_target_add_step_applies_manual_control_reset_default(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    advanced_without_reset_minutes = {
-        key: value
-        for key, value in _TARGET_ADVANCED.items()
-        if key != "manual_control_reset_minutes"
-    }
-    input_without_reset_minutes = {
-        **_TARGET_INPUT,
-        "advanced": advanced_without_reset_minutes,
-    }
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=input_without_reset_minutes
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    subentry = next(iter(entry.subentries.values()))
-    assert subentry.data["manual_control_reset_minutes"] == 0
-
-
-async def test_target_add_step_applies_defaults_of_an_absent_advanced_section(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """The Advanced section is collapsed by default, so it must be skippable.
-
-    `switch.py` reads every one of its keys unconditionally, so a target
-    created without ever expanding Advanced must not leave holes in the
-    stored data.
-    """
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    input_without_advanced = {
-        key: value for key, value in _TARGET_INPUT.items() if key != "advanced"
-    }
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=input_without_advanced
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    subentry = next(iter(entry.subentries.values()))
-    assert subentry.data["transition"] == 0.0
-    assert subentry.data["adapt_only_on_state_change"] is False
-    assert subentry.data["manual_control_reset_minutes"] == 0
-    assert subentry.data["separate_turn_on_commands"] is False
-    assert subentry.data["send_split_delay"] == 0.0
-
-
-def test_hub_declares_target_subentry_type() -> None:
-    entry = MockConfigEntry(domain=DOMAIN)
-
-    assert DaylightConfigFlow.async_get_supported_subentry_types(entry) == {
-        "target": TargetSubentryFlowHandler
-    }
-
-
-async def test_target_add_step_shows_form(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
-
-
-async def test_target_add_step_submit_creates_subentry(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """The section-shaped submission is stored as one flat dict."""
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=_TARGET_INPUT
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    subentries = list(entry.subentries.values())
-    assert len(subentries) == 1
-    assert subentries[0].data == _TARGET_DATA
-
-
-async def test_target_add_step_accepts_an_area_without_entities(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={**_TARGET_INPUT, "targets": {"area_id": ["kitchen"]}},
-    )
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    subentry = next(iter(entry.subentries.values()))
-    assert subentry.data["areas"] == ["kitchen"]
-    assert subentry.data["entities"] == []
-    assert subentry.title == "kitchen"
-
-
-@pytest.mark.parametrize(
-    ("targets", "error"),
-    [
-        ({}, "target_required"),
-        ({"device_id": ["device-1"]}, "unsupported_target"),
-        ({"entity_id": ["sensor.temperature"]}, "unsupported_target"),
-    ],
-)
-async def test_target_add_step_rejects_unsupported_or_empty_target(
-    enable_custom_integrations, hass, hass_config_dir, targets, error
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input={**_TARGET_INPUT, "targets": targets}
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": error}
-    assert entry.subentries == {}
-
-
-async def test_target_add_step_rejects_inverted_brightness_range(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    bad_input = {
-        **_TARGET_INPUT,
-        "brightness": {"min_brightness_pct": 90, "max_brightness_pct": 10},
-    }
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=bad_input
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
-    assert result["errors"] == {"base": "brightness_range_invalid"}
-    assert entry.subentries == {}
-
-
-async def test_target_add_step_rejects_inverted_color_temp_range(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(domain=DOMAIN, data={})
-    entry.add_to_hass(hass)
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"), context={"source": "user"}
-    )
-    bad_input = {
-        **_TARGET_INPUT,
-        "color_temp": {
-            "min_color_temp_kelvin": 6500,
-            "max_color_temp_kelvin": 2000,
-        },
-    }
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=bad_input
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
-    assert result["errors"] == {"base": "color_temp_range_invalid"}
-    assert entry.subentries == {}
-
-
-async def test_target_reconfigure_replaces_subentry_data(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={},
-        subentries_data=[
-            {
-                "data": _TARGET_DATA,
-                "subentry_type": "target",
-                "title": "light.kitchen, light.den",
-                "unique_id": None,
-            }
-        ],
-    )
-    entry.add_to_hass(hass)
-    subentry_id = next(iter(entry.subentries))
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"),
-        context={"source": "reconfigure", "subentry_id": subentry_id},
-    )
-    new_input = {
-        **_TARGET_INPUT,
-        "advanced": {**_TARGET_ADVANCED, "transition": 5.0},
-    }
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"], user_input=new_input
-    )
-
+    result = await choose(hass, result, "morning")
+    result = await configure(hass, result, mode="solar")
+    result = await configure(hass, result, offset_minutes=30)
+    assert entry.data == original
+    result = await choose(hass, result, "lengths")
+    result = await configure(hass, result, brightness_length=1.5, color_length=0.5)
+    assert entry.data == original
+    result = await choose(hass, result, "save")
+    assert entry.data == original  # opening review does not save
+    result = await configure(hass, result, action="save")
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
-    assert entry.subentries[subentry_id].data == {**_TARGET_DATA, "transition": 5.0}
+    basic = entry.data["schedule"]["basic"]
+    assert basic["morning_offset_minutes"] == 30
+    assert basic["brightness_length"] == 1.5
+    assert basic["color_length"] == 0.5
+    assert next(iter(entry.subentries.values())).data == TARGET_DATA
 
 
-def _suggested_values(schema) -> dict[str, object]:
-    """Read back the suggested value a shown form carries for every field."""
-    values = {}
-    for key, value in schema.schema.items():
-        if isinstance(value, section):
-            values[str(key)] = _suggested_values(value.schema)
-        else:
-            values[str(key)] = (key.description or {}).get("suggested_value")
-    return values
+async def test_cancel_discards_draft(hass, entry):
+    original = deepcopy(dict(entry.data))
+    result = await choose(hass, await menu(hass, entry), "lengths")
+    result = await configure(hass, result, brightness_length=2, color_length=2)
+    hass.config_entries.flow.async_abort(result["flow_id"])
+    assert entry.data == original
 
 
-async def test_target_reconfigure_form_shows_the_stored_values(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """Stored (flat) values have to be re-nested to repopulate the sections.
-
-    `add_suggested_values_to_schema` only descends into a section when the
-    suggested values are nested under that section's name, so handing it the
-    flat stored data would leave every sectioned field blank.
-    """
-    hass.config.config_dir = hass_config_dir
-    stored = {
-        **_TARGET_DATA,
-        "min_brightness_pct": 7,
-        "max_brightness_pct": 83,
-        "min_color_temp_kelvin": 2222,
-        "max_color_temp_kelvin": 5555,
-        "transition": 12.5,
-        "manual_control_reset_minutes": 42,
-        "send_split_delay": 0.25,
-    }
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={},
-        subentries_data=[
-            {
-                "data": stored,
-                "subentry_type": "target",
-                "title": "light.kitchen, light.den",
-                "unique_id": None,
-            }
-        ],
-    )
-    entry.add_to_hass(hass)
-    subentry_id = next(iter(entry.subentries))
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"),
-        context={"source": "reconfigure", "subentry_id": subentry_id},
-    )
-
-    assert result["type"] is FlowResultType.FORM
-    assert _suggested_values(result["data_schema"]) == {
-        "targets": {"entity_id": ["light.kitchen", "light.den"], "area_id": []},
-        "brightness": {"min_brightness_pct": 7, "max_brightness_pct": 83},
-        "color_temp": {
-            "min_color_temp_kelvin": 2222,
-            "max_color_temp_kelvin": 5555,
-        },
-        "advanced": {
-            "transition": 12.5,
-            "adapt_only_on_state_change": True,
-            "manual_control_reset_minutes": 42,
-            "separate_turn_on_commands": False,
-            "send_split_delay": 0.25,
-        },
-    }
-
-
-async def test_target_reconfigure_combines_stored_areas_and_entities_in_one_picker(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={},
-        subentries_data=[
-            {
-                "data": {**_TARGET_DATA, "areas": ["bedroom"]},
-                "subentry_type": "target",
-                "title": "Bedroom",
-                "unique_id": None,
-            }
-        ],
-    )
-    entry.add_to_hass(hass)
-    subentry_id = next(iter(entry.subentries))
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"),
-        context={"source": "reconfigure", "subentry_id": subentry_id},
-    )
-
-    assert _suggested_values(result["data_schema"])["targets"] == {
-        "entity_id": ["light.kitchen", "light.den"],
-        "area_id": ["bedroom"],
-    }
-
-
-async def test_target_reconfigure_retitles_the_subentry_from_its_entities(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """The title is derived from the entity list, so it has to track it."""
-    hass.config.config_dir = hass_config_dir
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={},
-        subentries_data=[
-            {
-                "data": _TARGET_DATA,
-                "subentry_type": "target",
-                "title": "light.kitchen, light.den",
-                "unique_id": None,
-            }
-        ],
-    )
-    entry.add_to_hass(hass)
-    subentry_id = next(iter(entry.subentries))
-
-    result = await hass.config_entries.subentries.async_init(
-        (entry.entry_id, "target"),
-        context={"source": "reconfigure", "subentry_id": subentry_id},
-    )
-    result = await hass.config_entries.subentries.async_configure(
-        result["flow_id"],
-        user_input={**_TARGET_INPUT, "targets": {"entity_id": ["light.porch"]}},
-    )
-
+async def test_clock_mode_and_next_day_round_trip(hass, entry):
+    result = await choose(hass, await menu(hass, entry), "morning")
+    result = await configure(hass, result, mode="clock")
+    result = await configure(hass, result, time="07:00:00")
+    result = await choose(hass, result, "evening")
+    result = await configure(hass, result, mode="clock")
+    result = await configure(hass, result, time="01:00:00", next_day=True)
+    result = await configure(hass, await choose(hass, result, "save"), action="save")
     assert result["type"] is FlowResultType.ABORT
-    assert entry.subentries[subentry_id].title == "light.porch"
+    assert entry.data["schedule"]["basic"]["evening_next_day"] is True
+    result = await choose(hass, await menu(hass, entry), "evening")
+    assert suggested(result["data_schema"])["mode"] == "clock"
+    result = await configure(hass, result, mode="clock")
+    assert suggested(result["data_schema"])["time"] == "01:00:00"
+
+
+async def test_invalid_schedule_keeps_saved_data_and_allows_correction(hass, entry):
+    original = deepcopy(dict(entry.data))
+    result = await choose(hass, await menu(hass, entry), "morning")
+    result = await configure(hass, result, mode="clock")
+    result = await configure(hass, result, time="23:00:00")
+    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    assert result["errors"] == {"base": "schedule_invalid"}
+    assert (
+        "evening occurs before morning" in result["description_placeholders"]["detail"]
+    )
+    assert entry.data == original
+    result = await configure(hass, result, action="keep_editing")
+    result = await choose(hass, result, "morning")
+    result = await configure(hass, result, mode="solar")
+    result = await configure(hass, result, offset_minutes=0)
+    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    assert result["type"] is FlowResultType.ABORT
+
+
+async def test_custom_endpoint_hides_basic_controls_without_destroying_them(
+    hass, entry
+):
+    result = await choose(hass, await menu(hass, entry), "customize")
+    result = await configure(hass, result, endpoint="color_morning_end")
+    assert suggested(result["data_schema"])["kind"] == "standard"
+    result = await configure(hass, result, kind="seasonal")
+    result = await configure(
+        hass, result, reference="sunrise", offset_minutes=120, next_day=False
+    )
+    assert "morning" not in result["menu_options"]
+    assert "restore" in result["menu_options"]
+    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    assert result["type"] is FlowResultType.ABORT
+    rule = entry.data["schedule"]["endpoints"]["color_morning_end"]
+    assert rule["kind"] == "seasonal"
+    result = await choose(hass, await menu(hass, entry), "customize")
+    result = await configure(hass, result, endpoint="color_morning_end")
+    assert suggested(result["data_schema"])["kind"] == "seasonal"
+    result = await configure(hass, result, kind="seasonal")
+    assert suggested(result["data_schema"])["offset_minutes"] == pytest.approx(
+        120, abs=0.1
+    )
+
+
+async def test_restore_requires_confirmation_and_save(hass, entry):
+    data = deepcopy(dict(entry.data))
+    data["schedule"]["endpoints"] = {
+        "color_morning_start": {
+            "kind": "solar",
+            "reference": "sunrise",
+            "offset_minutes": 5,
+        }
+    }
+    hass.config_entries.async_update_entry(entry, data=data)
+    result = await choose(hass, await menu(hass, entry), "restore")
+    result = await configure(hass, result, confirm=False)
+    assert "morning" not in result["menu_options"]
+    result = await configure(hass, await choose(hass, result, "restore"), confirm=True)
+    assert "morning" in result["menu_options"]
+    assert entry.data["schedule"]["endpoints"]
+    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    assert not entry.data["schedule"]["endpoints"]
+    assert next(iter(entry.subentries.values())).data == TARGET_DATA
+
+
+async def test_removing_last_override_restores_basic_controls(hass, entry):
+    result = await choose(hass, await menu(hass, entry), "customize")
+    result = await configure(hass, result, endpoint="color_morning_start")
+    result = await configure(hass, result, kind="solar")
+    result = await configure(
+        hass, result, reference="sunrise", offset_minutes=5, next_day=False
+    )
+    result = await choose(hass, result, "customize")
+    result = await configure(hass, result, endpoint="color_morning_start")
+    assert suggested(result["data_schema"])["kind"] == "solar"
+    result = await configure(hass, result, kind="standard")
+    assert "morning" in result["menu_options"]
+
+
+async def test_shape_only_edits_keep_basic_controls(hass, entry):
+    result = await choose(hass, await menu(hass, entry), "shapes")
+    result = await configure(
+        hass,
+        result,
+        brightness_morning="linear",
+        brightness_evening="smooth",
+        color_morning="smooth",
+        color_evening="linear",
+    )
+    assert "morning" in result["menu_options"]
+    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    assert entry.data["schedule"]["shapes"]["color_evening"] == "linear"
 
 
 @pytest.mark.parametrize("interval", [-1, 0, 0.5])
-async def test_hub_form_rejects_nonpositive_update_interval(
-    enable_custom_integrations, hass, hass_config_dir, interval: float
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
-
+async def test_nonpositive_poll_interval_is_rejected(hass, entry, interval):
+    result = await choose(hass, await menu(hass, entry), "runtime")
     with pytest.raises(vol.Invalid):
         result["data_schema"]({"update_interval_seconds": interval})
 
 
-async def test_hub_form_accepts_minimum_update_interval(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    hass.config.config_dir = hass_config_dir
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN, context={"source": "user"}
-    )
+def test_target_subentry_type():
+    assert DaylightConfigFlow.async_get_supported_subentry_types(
+        MockConfigEntry(domain=DOMAIN)
+    ) == {"target": TargetSubentryFlowHandler}
 
-    validated = result["data_schema"]({"update_interval_seconds": 1})
-    assert validated["update_interval_seconds"] == 1
+
+@pytest.mark.parametrize(
+    "targets",
+    [
+        {"entity_id": ["light.kitchen"]},
+        {"area_id": ["kitchen"]},
+        {"entity_id": ["light.kitchen"], "area_id": ["kitchen"]},
+    ],
+)
+async def test_add_target_with_defaults(hass, entry, targets):
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={"targets": targets}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    added = list(entry.subentries.values())[-1]
+    assert added.data["entities"] == targets.get("entity_id", [])
+    assert added.data["areas"] == targets.get("area_id", [])
+    assert added.data["min_brightness_pct"] == 10
+    assert added.data["min_color_temp_kelvin"] == 2500
+    assert added.data["max_color_temp_kelvin"] == 4000
+    assert added.data["transition"] == 0
+    assert added.data["manual_control_reset_minutes"] == 0
+
+
+@pytest.mark.parametrize(
+    "change,error",
+    [
+        ({"targets": {}}, "target_required"),
+        ({"targets": {"device_id": ["device"]}}, "unsupported_target"),
+        ({"targets": {"entity_id": ["sensor.temperature"]}}, "unsupported_target"),
+        (
+            {"brightness": {"min_brightness_pct": 90, "max_brightness_pct": 10}},
+            "brightness_range_invalid",
+        ),
+        (
+            {
+                "color_temp": {
+                    "min_color_temp_kelvin": 6500,
+                    "max_color_temp_kelvin": 2000,
+                }
+            },
+            "color_temp_range_invalid",
+        ),
+    ],
+)
+async def test_invalid_target_does_not_save(hass, entry, change, error):
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={**TARGET_INPUT, **change}
+    )
+    assert result["errors"] == {"base": error}
+    assert len(entry.subentries) == 1
+
+
+def suggested(schema):
+    return {
+        str(key): suggested(value.schema)
+        if isinstance(value, section)
+        else (key.description or {}).get("suggested_value")
+        for key, value in schema.schema.items()
+    }
+
+
+async def test_target_reconfigure_round_trip_and_retitles(hass, entry):
+    subentry_id = next(iter(entry.subentries))
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+    values = suggested(result["data_schema"])
+    assert values["targets"] == {"entity_id": ["light.kitchen"], "area_id": []}
+    assert values["color_temp"]["min_color_temp_kelvin"] == 2500
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={
+            **TARGET_INPUT,
+            "targets": {"entity_id": ["light.porch"]},
+            "advanced": {"transition": 5.0, "manual_control_reset_minutes": 15},
+        },
+    )
+    assert result["type"] is FlowResultType.ABORT
+    target = entry.subentries[subentry_id]
+    assert target.title == "light.porch"
+    assert target.data["transition"] == 5.0
+    assert target.data["manual_control_reset_minutes"] == 15
+    assert entry.data == default_hub_data()
+
+
+def test_target_sections_are_optional_and_collapsed():
+    for key, value in TARGET_SCHEMA.schema.items():
+        if isinstance(value, section):
+            assert isinstance(key, vol.Optional)
+    assert (
+        TARGET_SCHEMA({"targets": {"entity_id": ["light.kitchen"]}})["brightness"][
+            "min_brightness_pct"
+        ]
+        == 10
+    )

@@ -209,15 +209,12 @@ _DEFAULT_ADAPT_ONLY_ON_STATE_CHANGE = False
 _DEFAULT_SEPARATE_TURN_ON_COMMANDS = False
 _DEFAULT_SEND_SPLIT_DELAY = 0.0
 
-# Brightness and color temperature each hold a required field with no
-# default, so their section markers are required: an absent section is a
-# validation error. Every advanced field now has a default, so its section
-# can default to `{}` like the hub's -- collapsed and skippable.
+# All target settings have useful defaults; selecting lights is sufficient.
 RANGE_FIELDS = {
-    vol.Required(SECTION_BRIGHTNESS): section(
+    vol.Optional(SECTION_BRIGHTNESS, default=dict): section(
         vol.Schema(
             {
-                vol.Required(CONF_MIN_BRIGHTNESS_PCT): vol.All(
+                vol.Optional(CONF_MIN_BRIGHTNESS_PCT, default=10): vol.All(
                     NumberSelector(
                         NumberSelectorConfig(
                             min=1, max=100, mode=NumberSelectorMode.BOX
@@ -225,7 +222,7 @@ RANGE_FIELDS = {
                     ),
                     vol.Coerce(int),
                 ),
-                vol.Required(CONF_MAX_BRIGHTNESS_PCT): vol.All(
+                vol.Optional(CONF_MAX_BRIGHTNESS_PCT, default=100): vol.All(
                     NumberSelector(
                         NumberSelectorConfig(
                             min=1, max=100, mode=NumberSelectorMode.BOX
@@ -234,15 +231,21 @@ RANGE_FIELDS = {
                     vol.Coerce(int),
                 ),
             }
-        )
+        ),
+        {"collapsed": True},
     ),
-    vol.Required(SECTION_COLOR_TEMP): section(
+    vol.Optional(SECTION_COLOR_TEMP, default=dict): section(
         vol.Schema(
             {
-                vol.Required(CONF_MIN_COLOR_TEMP_KELVIN): _int_box(),
-                vol.Required(CONF_MAX_COLOR_TEMP_KELVIN): _int_box(),
+                vol.Optional(CONF_MIN_COLOR_TEMP_KELVIN, default=2500): _int_box(
+                    minimum=1
+                ),
+                vol.Optional(CONF_MAX_COLOR_TEMP_KELVIN, default=4000): _int_box(
+                    minimum=1
+                ),
             }
-        )
+        ),
+        {"collapsed": True},
     ),
 }
 

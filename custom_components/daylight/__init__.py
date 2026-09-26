@@ -12,9 +12,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .config import async_curve_settings
 from .coordinator import DayCoordinator
 from .http import PreviewFieldsView, SampleCurveView
+from .schedule_config import async_schedule
 
 PLATFORMS = (Platform.SWITCH, Platform.SENSOR)
 
@@ -54,10 +54,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a daylight hub entry: build its coordinator, forward platforms."""
     data = entry.data
-    curve_settings = await async_curve_settings(hass, data, name=entry.title)
+    schedule = await async_schedule(hass, data)
 
     update_interval = datetime.timedelta(seconds=data["update_interval_seconds"])
-    coordinator = DayCoordinator(hass, curve_settings, update_interval)
+    coordinator = DayCoordinator(hass, schedule, update_interval, name=entry.title)
     await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator

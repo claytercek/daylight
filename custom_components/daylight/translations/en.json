@@ -1,59 +1,68 @@
 {
   "config": {
+    "error": {
+      "brightness_range_invalid": "Night brightness must not exceed day brightness.",
+      "color_temp_range_invalid": "Night color temperature must not exceed daytime temperature.",
+      "target_required": "Select at least one area or light.",
+      "unsupported_target": "Only areas and light entities are supported.",
+      "schedule_invalid": "This schedule conflicts on some dates. See the explanation below and keep editing."
+    },
+    "abort": {"reconfigure_successful": "Schedule saved."},
     "step": {
       "user": {
-        "description": "[Open the live curve preview](/daylight-preview) to see how these settings shape brightness and color temperature over 24 hours. Opening it closes this form, so note your values first.",
-        "data": {
-          "update_interval_seconds": "Update Interval Seconds"
-        },
-        "data_description": {
-          "update_interval_seconds": "How often, in seconds, the daylight coordinator recalculates."
-        },
+        "title": "Choose your lights",
+        "description": "Daylight follows the sun, with dim, warm nights and brighter, cooler days. Select lights to start with automatic seasonal timing. Adaptation switches start off; enable them when ready. Night/day levels are optional adjustments below.",
+        "data": {"targets": "Areas or lights"},
         "sections": {
-          "sunrise": {
-            "name": "Sunrise",
-            "data": {
-              "sunrise_time": "Sunrise Time",
-              "min_sunrise_time": "Minimum Sunrise Time",
-              "max_sunrise_time": "Maximum Sunrise Time",
-              "sunrise_offset_minutes": "Sunrise Offset Minutes"
-            },
-            "data_description": {
-              "sunrise_time": "Leave blank to use the astronomical sunrise for this location, computed from the latitude, longitude and elevation Home Assistant is configured with. Set it only to override that with a fixed clock time.",
-              "min_sunrise_time": "Leave blank for no minimum. When set, a sunrise that lands earlier than this is moved up to it. Applies after the offset, to the astronomical sunrise and to a fixed Sunrise Time alike.",
-              "max_sunrise_time": "Leave blank for no maximum. When set, a sunrise that lands later than this is pulled back to it. Applies after the offset, to the astronomical sunrise and to a fixed Sunrise Time alike.",
-              "sunrise_offset_minutes": "Minutes to shift sunrise, positive is later."
-            }
-          },
-          "sunset": {
-            "name": "Sunset",
-            "data": {
-              "sunset_time": "Sunset Time",
-              "min_sunset_time": "Minimum Sunset Time",
-              "max_sunset_time": "Maximum Sunset Time",
-              "sunset_offset_minutes": "Sunset Offset Minutes"
-            },
-            "data_description": {
-              "sunset_time": "Leave blank to use the astronomical sunset for this location, computed from the latitude, longitude and elevation Home Assistant is configured with. Set it only to override that with a fixed clock time.",
-              "min_sunset_time": "Leave blank for no minimum. When set, a sunset that lands earlier than this is moved up to it. Applies after the offset, to the astronomical sunset and to a fixed Sunset Time alike.",
-              "max_sunset_time": "Leave blank for no maximum. When set, a sunset that lands later than this is pulled back to it. Applies after the offset, to the astronomical sunset and to a fixed Sunset Time alike.",
-              "sunset_offset_minutes": "Minutes to shift sunset, positive is later."
-            }
-          },
-          "brightness_curve": {
-            "name": "Brightness Curve",
-            "data": {
-              "brightness_mode": "Brightness Mode",
-              "brightness_mode_time_dark_minutes": "Brightness Ramp Time When Dark",
-              "brightness_mode_time_light_minutes": "Brightness Ramp Time When Light"
-            },
-            "data_description": {
-              "brightness_mode": "Shape of the brightness curve around sunrise and sunset.",
-              "brightness_mode_time_dark_minutes": "Minutes before/after a sun event the dark-side ramp starts or ends.",
-              "brightness_mode_time_light_minutes": "Minutes before/after a sun event the light-side ramp starts or ends."
-            }
+          "brightness": {"name": "Brightness", "data": {"min_brightness_pct": "Night brightness (%)", "max_brightness_pct": "Day brightness (%)"}},
+          "color_temp": {"name": "Warmth", "data": {"min_color_temp_kelvin": "Night temperature (K)", "max_color_temp_kelvin": "Day temperature (K)"}, "data_description": {"min_color_temp_kelvin": "Lower values are warmer. Each bulb uses its supported range.", "max_color_temp_kelvin": "Higher values are cooler. Each bulb uses its supported range."}},
+          "advanced": {
+            "name": "Light behavior",
+            "data": {"transition": "Light fade duration (seconds)", "adapt_only_on_state_change": "Only adapt on state changes", "manual_control_reset_minutes": "Resume after manual changes (minutes)", "separate_turn_on_commands": "Separate brightness and color commands", "send_split_delay": "Delay between commands (seconds)"},
+            "data_description": {"transition": "Fade requested from the bulb, separate from the daily curve. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."}
           }
         }
+      },
+      "menu": {
+        "title": "Daily schedule",
+        "description": "{summary}\n\nChanges remain a draft until you review and save. Cancel to discard. Light levels and selection are edited on each target. [View the saved schedule](/daylight-preview). Opening the preview leaves this form; save or cancel first.",
+        "menu_options": {"morning": "Morning timing", "evening": "Evening timing", "lengths": "Transition lengths", "advanced": "Advanced settings", "restore": "Restore standard timing", "save": "Review and save"}
+      },
+      "advanced": {"title": "Advanced settings", "description": "Optional controls for individual transition endpoints, curve shapes and update frequency.", "menu_options": {"customize": "Customize individual endpoints", "shapes": "Transition shapes", "runtime": "Update frequency", "menu": "Back to schedule"}},
+      "morning": {"title": "Morning timing", "description": "Move brightness and color together. Their relative timing stays the same.", "data": {"mode": "Morning follows"}},
+      "evening": {"title": "Evening timing", "description": "Move brightness and color together. Their relative timing stays the same.", "data": {"mode": "Evening follows"}},
+      "anchor": {"title": "Set timing", "description": "{meaning}", "data": {"offset_minutes": "Earlier / later (minutes)", "time": "Local time", "next_day": "Following day"}},
+      "lengths": {
+        "title": "Transition lengths",
+        "description": "Shorter ← 1 is standard → Longer. Morning and evening lengths stay linked for each track. Durations grow in summer and shrink in winter; they shorten further when needed to fit.\n\nToday’s draft:\n{summary}",
+        "data": {"brightness_length": "Brightness transitions", "color_length": "Color transitions"}
+      },
+      "customize": {
+        "title": "Custom timing",
+        "description": "Each track has four endpoints. Custom rules are exact and checked across seasons before saving; they are not automatically moved to fit. Unchanged endpoints keep their standard rules. Choose Standard to remove an override. Basic timing controls are hidden while endpoint overrides exist.\n\n{summary}",
+        "data": {"endpoint": "Endpoint"}
+      },
+      "endpoint_kind": {
+        "title": "Timing rule",
+        "description": "Editing {point}. The current rule is selected. Choose Standard to remove an override, or choose how this endpoint should follow the sun or clock.",
+        "data": {"kind": "Timing rule"}
+      },
+      "endpoint": {
+        "title": "Endpoint timing",
+        "description": "Editing {point}. {meaning} Negative offsets are before the event. This edits the draft only.",
+        "data": {"reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}
+      },
+      "shapes": {
+        "title": "Transition shapes",
+        "description": "Smooth gently starts and finishes. Linear changes at a constant rate. Shapes never change endpoint timing.",
+        "data": {"brightness_morning": "Morning brightness", "brightness_evening": "Evening brightness", "color_morning": "Morning color", "color_evening": "Evening color"}
+      },
+      "runtime": {"title": "Update frequency", "description": "How often Daylight recalculates. This does not change the curve or the bulb’s fade duration.", "data": {"update_interval_seconds": "Update interval (seconds)"}},
+      "restore": {"title": "Restore standard timing", "description": "Replaces all custom endpoint rules and basic timing adjustments with seasonal defaults. Target ranges and transition shapes are kept. Nothing changes on your lights until you save.", "data": {"confirm": "Replace custom timing"}},
+      "save": {
+        "title": "Save schedule",
+        "description": "{summary}\n\n{detail}\n\nSaving checks a full year of seasonal timing and applies this schedule. Actual light updates follow the configured update interval and bulb fade behavior.",
+        "data": {"action": "Action"}
       }
     }
   },
@@ -61,66 +70,25 @@
     "target": {
       "entry_type": "Target",
       "error": {
-        "brightness_range_invalid": "Minimum brightness must not exceed maximum brightness.",
-        "color_temp_range_invalid": "Minimum color temperature must not exceed maximum color temperature.",
-        "target_required": "Select at least one area or light entity.",
+        "brightness_range_invalid": "Night brightness must not exceed day brightness.",
+        "color_temp_range_invalid": "Night color temperature must not exceed daytime temperature.",
+        "target_required": "Select at least one area or light.",
         "unsupported_target": "Only areas and light entities are supported."
       },
-      "abort": {
-        "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
-      },
-      "initiate_flow": {
-        "user": "Add target",
-        "reconfigure": "Reconfigure target"
-      },
+      "abort": {"reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"},
+      "initiate_flow": {"user": "Add target", "reconfigure": "Edit lights and levels"},
       "step": {
         "init": {
-          "description": "[Open the live curve preview](/daylight-preview) to see how these settings shape brightness and color temperature over 24 hours. Opening it closes this form, so note your values first.",
-          "data": {
-            "targets": "Areas or lights"
-          },
-          "data_description": {
-            "targets": "Select areas and/or individual lights. Each light is adapted independently; devices are not supported."
-          },
+          "description": "Choose lights and their night/day levels. Timing is shared with the hub; edit its daily schedule separately. [View saved curves](/daylight-preview) after saving; opening the preview leaves this form.",
+          "data": {"targets": "Areas or lights"},
+          "data_description": {"targets": "Select areas and/or individual lights. Each light is adapted independently; devices are not supported."},
           "sections": {
-            "brightness": {
-              "name": "Brightness",
-              "data": {
-                "min_brightness_pct": "Minimum Brightness Percent",
-                "max_brightness_pct": "Maximum Brightness Percent"
-              },
-              "data_description": {
-                "min_brightness_pct": "Lowest brightness percent the curve will output.",
-                "max_brightness_pct": "Highest brightness percent the curve will output."
-              }
-            },
-            "color_temp": {
-              "name": "Color Temperature",
-              "data": {
-                "min_color_temp_kelvin": "Minimum Color Temperature Kelvin",
-                "max_color_temp_kelvin": "Maximum Color Temperature Kelvin"
-              },
-              "data_description": {
-                "min_color_temp_kelvin": "Warmest color temperature the curve will output.",
-                "max_color_temp_kelvin": "Coolest color temperature the curve will output."
-              }
-            },
+            "brightness": {"name": "Brightness", "data": {"min_brightness_pct": "Night brightness (%)", "max_brightness_pct": "Day brightness (%)"}},
+            "color_temp": {"name": "Warmth", "data": {"min_color_temp_kelvin": "Night temperature (K)", "max_color_temp_kelvin": "Day temperature (K)"}, "data_description": {"min_color_temp_kelvin": "Lower values are warmer. Each bulb uses its supported range.", "max_color_temp_kelvin": "Higher values are cooler. Each bulb uses its supported range."}},
             "advanced": {
-              "name": "Advanced",
-              "data": {
-                "transition": "Transition",
-                "adapt_only_on_state_change": "Adapt Only On State Change",
-                "manual_control_reset_minutes": "Manual Control Reset Minutes",
-                "separate_turn_on_commands": "Separate Turn-On Commands",
-                "send_split_delay": "Send Split Delay"
-              },
-              "data_description": {
-                "transition": "Transition duration, in seconds, sent with each light command.",
-                "adapt_only_on_state_change": "Only adapt when a light changes state, instead of on every update.",
-                "manual_control_reset_minutes": "Minutes of no manual changes before adaptation resumes automatically.",
-                "separate_turn_on_commands": "Send brightness and color temperature in separate commands.",
-                "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."
-              }
+              "name": "Light behavior",
+              "data": {"transition": "Light fade duration (seconds)", "adapt_only_on_state_change": "Only adapt on state changes", "manual_control_reset_minutes": "Resume after manual changes (minutes)", "separate_turn_on_commands": "Separate brightness and color commands", "send_split_delay": "Delay between commands (seconds)"},
+              "data_description": {"transition": "Fade requested from the bulb, separate from the daily curve. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."}
             }
           }
         }
@@ -128,12 +96,11 @@
     }
   },
   "selector": {
-    "brightness_mode": {
-      "options": {
-        "default": "Default",
-        "linear": "Linear",
-        "tanh": "Smooth (tanh)"
-      }
-    }
+    "shape": {"options": {"smooth": "Smooth", "linear": "Linear"}},
+    "timing_mode": {"options": {"solar": "The sun", "clock": "A fixed time"}},
+    "solar_reference": {"options": {"sunrise": "Sunrise", "sunset": "Sunset", "noon": "Solar noon", "midnight": "Solar midnight"}},
+    "endpoint_kind": {"options": {"standard": "Standard seasonal timing", "seasonal": "Solar offset that stretches with the season", "solar": "Solar offset in fixed minutes", "clock": "Fixed clock time"}},
+    "endpoint": {"options": {"brightness_morning_start": "Brightness: morning start", "brightness_morning_end": "Brightness: morning finish", "brightness_evening_start": "Brightness: evening start", "brightness_evening_end": "Brightness: evening finish", "color_morning_start": "Color: morning start", "color_morning_end": "Color: morning finish", "color_evening_start": "Color: evening start", "color_evening_end": "Color: evening finish"}},
+    "save_action": {"options": {"save": "Save schedule", "keep_editing": "Keep editing"}}
   }
 }
