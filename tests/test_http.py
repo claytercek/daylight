@@ -13,6 +13,7 @@ import datetime
 from unittest.mock import patch
 
 import astral
+import pytest
 from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
@@ -22,6 +23,7 @@ from custom_components.daylight.curve_preview import sample_curve
 from custom_components.daylight.http import (
     _CONF_NUM_POINTS,
     _CONF_START,
+    MAX_NUM_POINTS,
     SAMPLE_CURVE_SCHEMA,
 )
 
@@ -84,13 +86,13 @@ async def test_sample_curve_returns_points_for_full_field_set(
     datetime.datetime.fromisoformat(body["sunset"])
 
 
-async def test_sample_curve_defaults_start_to_now(
+async def test_sample_curve_defaults_start_to_home_assistant_midnight(
     enable_custom_integrations, hass, hass_config_dir, hass_client
 ) -> None:
     await _setup(hass, enable_custom_integrations, hass_config_dir)
     client = await hass_client()
 
-    frozen_now = datetime.datetime(2026, 6, 21, 12, 0, tzinfo=datetime.UTC)
+    frozen_now = datetime.datetime(2026, 6, 21, 2, 0, tzinfo=datetime.UTC)
     with patch(
         "custom_components.daylight.http.dt_util.utcnow", return_value=frozen_now
     ):
@@ -98,7 +100,11 @@ async def test_sample_curve_defaults_start_to_now(
 
     assert resp.status == 200
     body = await resp.json()
-    assert body["points"][0]["utc_time"] == frozen_now.isoformat()
+    # UTC has reached June 21 while New York is still on June 20.
+    assert body["points"][0]["utc_time"] == "2026-06-20T00:00:00-04:00"
+    assert datetime.datetime.fromisoformat(body["sunrise"]).date() == datetime.date(
+        2026, 6, 20
+    )
 
 
 async def test_sample_curve_rejects_missing_required_section(
@@ -317,3 +323,25 @@ async def test_preview_fields_matches_sample_curve_schema_minus_window_fields(
         _CONF_NUM_POINTS,
     }
     assert field_names == schema_keys
+
+
+@pytest.mark.parametrize("num_points", [-1, 0, MAX_NUM_POINTS + 1, 1_000_000])
+async def test_sample_curve_rejects_unbounded_work(
+    enable_custom_integrations, hass, hass_config_dir, hass_client, num_points
+) -> None:
+    await _setup(hass, enable_custom_integrations, hass_config_dir)
+    client = await hass_client()
+
+    with patch("custom_components.daylight.http.sample_curve") as sample:
+        resp = await client.post(
+            _URL, json={**_VALID_PAYLOAD, "num_points": num_points}
+        )
+
+    assert resp.status == 400
+    sample.assert_not_called()
+
+
+@pytest.mark.parametrize("num_points", [1, MAX_NUM_POINTS])
+def test_sample_curve_accepts_sampling_bounds(num_points: int) -> None:
+    validated = SAMPLE_CURVE_SCHEMA({**_VALID_PAYLOAD, "num_points": num_points})
+    assert validated["num_points"] == num_points

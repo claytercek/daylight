@@ -5,16 +5,14 @@ from __future__ import annotations
 import datetime
 import pathlib
 
-import astral
 from homeassistant.components import panel_custom
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.util import dt as dt_util
 
-from .color_and_brightness import CurveSettings
+from .config import async_curve_settings
 from .coordinator import DayCoordinator
 from .http import PreviewFieldsView, SampleCurveView
 
@@ -23,13 +21,6 @@ PLATFORMS = (Platform.SWITCH, Platform.SENSOR)
 _PANEL_JS_NAME = "daylight-curve-preview-panel.js"
 _PANEL_JS_PATH = pathlib.Path(__file__).parent / "panel" / _PANEL_JS_NAME
 _PANEL_URL_PATH = f"/daylight_panel/{_PANEL_JS_NAME}"
-
-
-def _parse_time(value: str | None) -> datetime.time | None:
-    """Parse an `"HH:MM:SS"` entry-data value, passing `None` through."""
-    if value is None:
-        return None
-    return datetime.time.fromisoformat(value)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -63,34 +54,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a daylight hub entry: build its coordinator, forward platforms."""
     data = entry.data
-    # hass.config.time_zone is always a valid IANA zone name in a running HA
-    # instance, so this only falls back to UTC if that ever stops holding.
-    timezone = await dt_util.async_get_time_zone(hass.config.time_zone) or dt_util.UTC
-
-    curve_settings = CurveSettings(
-        name=entry.title,
-        astral_observer=astral.Observer(
-            latitude=hass.config.latitude,
-            longitude=hass.config.longitude,
-            elevation=hass.config.elevation,
-        ),
-        timezone=timezone,
-        sunrise_time=_parse_time(data["sunrise_time"]),
-        min_sunrise_time=_parse_time(data["min_sunrise_time"]),
-        max_sunrise_time=_parse_time(data["max_sunrise_time"]),
-        sunset_time=_parse_time(data["sunset_time"]),
-        min_sunset_time=_parse_time(data["min_sunset_time"]),
-        max_sunset_time=_parse_time(data["max_sunset_time"]),
-        sunrise_offset=datetime.timedelta(minutes=data["sunrise_offset_minutes"]),
-        sunset_offset=datetime.timedelta(minutes=data["sunset_offset_minutes"]),
-        brightness_mode=data["brightness_mode"],
-        brightness_mode_time_dark=datetime.timedelta(
-            minutes=data["brightness_mode_time_dark_minutes"]
-        ),
-        brightness_mode_time_light=datetime.timedelta(
-            minutes=data["brightness_mode_time_light_minutes"]
-        ),
-    )
+    curve_settings = await async_curve_settings(hass, data, name=entry.title)
 
     update_interval = datetime.timedelta(seconds=data["update_interval_seconds"])
     coordinator = DayCoordinator(hass, curve_settings, update_interval)

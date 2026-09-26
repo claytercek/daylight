@@ -8,6 +8,8 @@ through `hass.config_entries`, which uses HA's loader-based discovery.
 
 from unittest.mock import patch
 
+import pytest
+import voluptuous as vol
 from homeassistant.data_entry_flow import FlowResultType, section
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -522,3 +524,28 @@ async def test_target_reconfigure_retitles_the_subentry_from_its_entities(
 
     assert result["type"] is FlowResultType.ABORT
     assert entry.subentries[subentry_id].title == "light.porch"
+
+
+@pytest.mark.parametrize("interval", [-1, 0, 0.5])
+async def test_hub_form_rejects_nonpositive_update_interval(
+    enable_custom_integrations, hass, hass_config_dir, interval: float
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+
+    with pytest.raises(vol.Invalid):
+        result["data_schema"]({"update_interval_seconds": interval})
+
+
+async def test_hub_form_accepts_minimum_update_interval(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+
+    validated = result["data_schema"]({"update_interval_seconds": 1})
+    assert validated["update_interval_seconds"] == 1
