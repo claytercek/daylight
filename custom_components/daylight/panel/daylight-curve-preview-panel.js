@@ -71,6 +71,7 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._points = null;
     this._chartDebounceTimer = null;
     this._chartRequestId = 0;
+    this._lastDrawArgs = null;
     this._data = {
       brightness: { min_brightness_pct: 1, max_brightness_pct: 100 },
       color_temp: { min_color_temp_kelvin: 2000, max_color_temp_kelvin: 5500 }
@@ -81,31 +82,12 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._lampSwatch = null;
   }
 
-  // Builds an ISO-8601 string for local midnight today with an explicit
-  // numeric UTC offset (never "Z"), because the sample_curve endpoint
-  // rejects bare/offsetless timestamps.
-  static _buildLocalMidnightISOString(date = new Date()) {
-    const pad = (n) => String(n).padStart(2, "0");
-
-    const year = date.getFullYear();
-    const month = date.getMonth();
-    const day = date.getDate();
-    const midnight = new Date(year, month, day, 0, 0, 0, 0);
-
-    // getTimezoneOffset() is minutes *behind* UTC, with the sign inverted
-    // relative to a conventional offset string (e.g. UTC-5 => +300).
-    const offsetMinutes = midnight.getTimezoneOffset();
-    const sign = offsetMinutes > 0 ? "-" : "+";
-    const absMinutes = Math.abs(offsetMinutes);
-    const offsetHours = Math.floor(absMinutes / 60);
-    const offsetMins = absMinutes % 60;
-    const offset = `${sign}${pad(offsetHours)}:${pad(offsetMins)}`;
-
-    return `${year}-${pad(month + 1)}-${pad(day)}T00:00:00${offset}`;
-  }
-
   connectedCallback() {
-    if (this._initialized) return;
+    if (this._initialized) {
+      this._resizeObserver.observe(this._chartCanvas);
+      this._resizeCanvas();
+      return;
+    }
     this._initialized = true;
 
     const style = document.createElement("style");
@@ -228,6 +210,11 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     this._resizeCanvas();
   }
 
+  disconnectedCallback() {
+    this._resizeObserver?.disconnect();
+    clearTimeout(this._chartDebounceTimer);
+  }
+
   set hass(hass) {
     this._hass = hass;
 
@@ -302,8 +289,7 @@ class DaylightCurvePreviewPanel extends HTMLElement {
 
     const payload = {
       ...cleanedData,
-      num_points: 96,
-      start: DaylightCurvePreviewPanel._buildLocalMidnightISOString()
+      num_points: 96
     };
 
     try {
@@ -325,6 +311,11 @@ class DaylightCurvePreviewPanel extends HTMLElement {
     } catch (error) {
       if (requestId !== this._chartRequestId) return;
       this._points = null;
+      this._sunrise = null;
+      this._sunset = null;
+      this._lastDrawArgs = null;
+      this._hoverIndex = null;
+      this._updateLamp(null);
       console.error("Failed to fetch curve sample:", error);
       this._clearChart();
       this._chartErrorMessage.textContent = "Error loading curve";
