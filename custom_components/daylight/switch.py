@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -30,6 +31,7 @@ from .coordinator import DayCoordinator, DayState
 from .target import Target, TargetConfig
 
 TARGET_SUBENTRY_TYPE = "target"
+_LOGGER = logging.getLogger(__name__)
 
 # The exact keys `adaptation.compute_turn_on_kwargs` can emit. Only needed to
 # split one combined command into two when `separate_turn_on_commands` is set
@@ -380,7 +382,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         transition_seconds = self._settings.transition
         if len(parts) > 1:
             transition_seconds += self._settings.send_split_delay
-        self._target.record_command(
+        previous_suppress_until = self._target.record_command(
             entity_id,
             context.id,
             transition_seconds=transition_seconds,
@@ -391,7 +393,15 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                 await asyncio.sleep(self._settings.send_split_delay)
                 if not self._can_send(entity_id):
                     return
-            await self._async_turn_on(entity_id, part, context)
+            try:
+                await self._async_turn_on(entity_id, part, context)
+            except Exception:
+                if index == 0:
+                    self._target.discard_command(
+                        entity_id, context.id, previous_suppress_until
+                    )
+                _LOGGER.exception("Unable to adapt %s", entity_id)
+                return
 
     def _can_send(self, entity_id: str) -> bool:
         """Check the live state before either part of a queued command."""

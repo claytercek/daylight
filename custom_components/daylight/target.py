@@ -103,13 +103,14 @@ class Target:
         transition_seconds: float = 0.0,
         *,
         now: float,
-    ) -> None:
+    ) -> float:
         """Register a command *about to be* issued for `entity_id`.
 
         Callers must call this **before** the `light.turn_on` service call, so
         that a state report can never race the bookkeeping that recognises it.
         """
         state = self._state(entity_id)
+        previous_suppress_until = state.suppress_until
         state.own_context_ids.append(context_id)
         # Extend, never retract: a short command issued while a long fade is
         # still running must not expose the fade's own final report.
@@ -117,6 +118,15 @@ class Target:
             state.suppress_until,
             now + transition_seconds + SUPPRESSION_GRACE_SECONDS,
         )
+        return previous_suppress_until
+
+    def discard_command(
+        self, entity_id: str, context_id: str, previous_suppress_until: float
+    ) -> None:
+        """Undo bookkeeping when dispatch failed before any command was sent."""
+        state = self._state(entity_id)
+        state.own_context_ids.remove(context_id)
+        state.suppress_until = previous_suppress_until
 
     def observe_state_change(
         self,
