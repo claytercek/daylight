@@ -4,9 +4,9 @@
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["http", "light", "panel_custom"],
-  "documentation": "https://github.com/REPLACE_ME/daylight",
+  "documentation": "https://github.com/claytercek/daylight",
   "iot_class": "calculated",
-  "issue_tracker": "https://github.com/REPLACE_ME/daylight/issues",
+  "issue_tracker": "https://github.com/claytercek/daylight/issues",
   "requirements": [],
   "version": "0.1.0"
 }
