@@ -1,6 +1,6 @@
 """Pin the config flow UI strings to the actual voluptuous schemas.
 
-Reads the real `HUB_SCHEMA`/`TARGET_SCHEMA` objects rather than a hardcoded
+Reads the actual native form schemas rather than a hardcoded
 list of field names, so a field rename in `config_flow.py` without a matching
 string update fails this test.
 """

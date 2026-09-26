@@ -6,14 +6,8 @@ Assistant custom integration (https://github.com/basnijholt/adaptive-lighting),
 Copyright the Adaptive Lighting contributors, licensed under the Apache
 License, Version 2.0.
 
-custom_components/daylight/color_and_brightness.py is a modified port of
-adaptive-lighting's custom_components/adaptive_lighting/color_and_brightness.py.
-Changes: the sun-timing calculations (SunEvents) are carried over unchanged;
-the brightness/color curve functions were rewritten to emit normalized
-[0, 1] factors instead of values baked against a config entry's min/max
-brightness and color temperature, and sleep-mode and legacy RGB-only-color
-branches were removed as out of scope for this project.
-
 custom_components/daylight/solar.py adapts the solar-phase diagnostic and
-one-hour polar fallback from that same source. It resolves local dates to UTC
-and distinguishes actual astronomical events from synthetic lighting anchors.
+one-hour polar fallback from adaptive-lighting's
+custom_components/adaptive_lighting/color_and_brightness.py. It resolves local
+dates to UTC and distinguishes actual astronomical events from synthetic
+lighting anchors. Lighting timing and interpolation are implemented separately.

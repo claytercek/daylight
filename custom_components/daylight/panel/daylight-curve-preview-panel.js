@@ -1,630 +1,250 @@
-const SECTION_TITLES = {
-  sunrise: "Sunrise",
-  sunset: "Sunset",
-  brightness_curve: "Brightness Curve",
-  brightness: "Brightness",
-  color_temp: "Color Temperature"
-};
-
-const FIELD_LABELS = {
-  sunrise_time: "Sunrise Time",
-  min_sunrise_time: "Minimum Sunrise Time",
-  max_sunrise_time: "Maximum Sunrise Time",
-  sunrise_offset_minutes: "Sunrise Offset Minutes",
-  sunset_time: "Sunset Time",
-  min_sunset_time: "Minimum Sunset Time",
-  max_sunset_time: "Maximum Sunset Time",
-  sunset_offset_minutes: "Sunset Offset Minutes",
-  brightness_mode: "Brightness Mode",
-  brightness_mode_time_dark_minutes: "Brightness Ramp Time When Dark",
-  brightness_mode_time_light_minutes: "Brightness Ramp Time When Light",
-  min_brightness_pct: "Minimum Brightness Percent",
-  max_brightness_pct: "Maximum Brightness Percent",
-  min_color_temp_kelvin: "Minimum Color Temperature Kelvin",
-  max_color_temp_kelvin: "Maximum Color Temperature Kelvin"
-};
-
-// Approximates the sRGB color of blackbody radiation at a given color
-// temperature (Tanner Helland's piecewise fit) -- used for the "preview
-// lamp" swatch. Deliberately not physically exact; close enough for a
-// visual readout of "warmer" vs "cooler".
-function kelvinToRgb(kelvin) {
-  const temp = kelvin / 100;
-  let r;
-  let g;
-  let b;
-
-  if (temp <= 66) {
-    r = 255;
-    g = 99.4708025861 * Math.log(temp) - 161.1195681661;
-  } else {
-    r = 329.698727446 * Math.pow(temp - 60, -0.1332047592);
-    g = 288.1221695283 * Math.pow(temp - 60, -0.0755148492);
-  }
-
-  if (temp >= 66) {
-    b = 255;
-  } else if (temp <= 19) {
-    b = 0;
-  } else {
-    b = 138.5177312231 * Math.log(temp - 10) - 305.0447927307;
-  }
-
-  const clamp = (value) => Math.max(0, Math.min(255, Math.round(value)));
-  return { r: clamp(r), g: clamp(g), b: clamp(b) };
+// Read-only: requests contain saved hub/target IDs and a date, never settings.
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgElement(tag, attributes, text) {
+  const element = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+  if (text !== undefined) element.textContent = text;
+  return element;
 }
 
 class DaylightCurvePreviewPanel extends HTMLElement {
-  static CHART_MARGIN = { top: 16, right: 50, bottom: 28, left: 50 };
-
   constructor() {
     super();
     this._hass = null;
-    this._fieldsFetched = false;
-    this._formElement = null;
-    this._formContainer = null;
-    this._schema = null;
     this._initialized = false;
-    this._chartContainer = null;
-    this._chartCanvas = null;
-    this._chartErrorMessage = null;
-    this._points = null;
-    this._chartDebounceTimer = null;
-    this._chartRequestId = 0;
-    this._lastDrawArgs = null;
-    this._data = {
-      brightness: { min_brightness_pct: 1, max_brightness_pct: 100 },
-      color_temp: { min_color_temp_kelvin: 2000, max_color_temp_kelvin: 5500 }
-    };
-    this._sunrise = null;
-    this._sunset = null;
-    this._hoverIndex = null;
-    this._lampSwatch = null;
+    this._connected = false;
+    this._catalogId = 0;
+    this._requestId = 0;
+    this._targets = [];
+    this._data = null;
   }
 
   connectedCallback() {
-    if (this._initialized) {
-      this._resizeObserver.observe(this._chartCanvas);
-      this._resizeCanvas();
-      return;
+    this._connected = true;
+    if (!this._initialized) {
+      this.innerHTML = `
+        <style>
+          daylight-curve-preview-panel { display:block; color:var(--primary-text-color); }
+          daylight-curve-preview-panel main { max-width:1100px; margin:auto; padding:24px; }
+          daylight-curve-preview-panel .controls { display:flex; flex-wrap:wrap; align-items:end; gap:16px; }
+          daylight-curve-preview-panel label { display:flex; flex-direction:column; gap:6px; }
+          daylight-curve-preview-panel input, daylight-curve-preview-panel select,
+          daylight-curve-preview-panel button { font:inherit; padding:8px; color:inherit;
+            background:var(--card-background-color); border:1px solid var(--divider-color); border-radius:6px; }
+          daylight-curve-preview-panel a { color:var(--primary-color); }
+          daylight-curve-preview-panel svg { display:block; width:100%; height:auto; margin-top:24px; }
+          daylight-curve-preview-panel .legend { display:flex; flex-wrap:wrap; gap:24px; }
+          daylight-curve-preview-panel .brightness { color:#c58200; }
+          daylight-curve-preview-panel .color { color:#248bd2; }
+          daylight-curve-preview-panel #inspect { width:100%; box-sizing:border-box; }
+          daylight-curve-preview-panel #notes { white-space:pre-line; }
+          daylight-curve-preview-panel #status { min-height:1.5em; }
+          daylight-curve-preview-panel table { border-collapse:collapse; width:100%; }
+          daylight-curve-preview-panel th, daylight-curve-preview-panel td { padding:8px; text-align:left;
+            border-bottom:1px solid var(--divider-color); }
+          daylight-curve-preview-panel details { margin-top:24px; }
+          daylight-curve-preview-panel summary { cursor:pointer; padding:8px 0; }
+          @media(max-width:600px) { daylight-curve-preview-panel main { padding:12px; } }
+        </style>
+        <main>
+          <h1>Daylight preview</h1>
+          <p>Your saved schedule. Make changes in <a href="/config/integrations">Home Assistant settings</a>.</p>
+          <div class="controls">
+            <label>Target<select id="target" disabled></select></label>
+            <label>Date<input id="date" type="date"></label>
+            <button id="refresh" type="button">Refresh saved settings</button>
+          </div>
+          <p id="status" role="status" aria-live="polite"></p>
+          <p id="zone"></p>
+          <div class="legend"><span class="brightness">Brightness (%)</span><span class="color">Color temperature (K)</span></div>
+          <svg id="chart" viewBox="0 0 1000 360" role="img" aria-label="Saved brightness and color temperature curves"></svg>
+          <label for="inspect">Inspect time (does not change lights)</label>
+          <input id="inspect" type="range" min="0" max="96" value="0" step="1" disabled>
+          <output id="readout" for="inspect"></output>
+          <p id="notes"></p>
+          <p>Levels show this target’s configured ranges. Individual bulbs may clamp color temperature to their supported range.</p>
+          <details><summary>Transition times</summary><div id="timing"></div></details>
+          <details><summary>Values as a table</summary>
+            <table><thead><tr><th>Local time</th><th>Brightness</th><th>Temperature</th></tr></thead><tbody id="values"></tbody></table>
+          </details>
+        </main>`;
+      this._target = this.querySelector("#target");
+      this._date = this.querySelector("#date");
+      this._status = this.querySelector("#status");
+      this._zone = this.querySelector("#zone");
+      this._chart = this.querySelector("#chart");
+      this._inspect = this.querySelector("#inspect");
+      this._readout = this.querySelector("#readout");
+      this._notes = this.querySelector("#notes");
+      this._timing = this.querySelector("#timing");
+      this._values = this.querySelector("#values");
+      this._target.addEventListener("change", () => this._loadCurve());
+      this._date.addEventListener("change", () => this._loadCurve());
+      this._inspect.addEventListener("input", () => this._draw());
+      this.querySelector("#refresh").addEventListener("click", () => this._refresh());
+      this._resizeObserver = new ResizeObserver(() => this._draw());
+      this._initialized = true;
     }
-    this._initialized = true;
-
-    const style = document.createElement("style");
-    style.textContent = `
-      daylight-curve-preview-panel .panel-wrapper {
-        padding: 24px;
-        max-width: 1400px;
-        margin: 0 auto;
-        box-sizing: border-box;
-      }
-      daylight-curve-preview-panel .panel-grid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 24px;
-        align-items: start;
-      }
-      daylight-curve-preview-panel canvas {
-        display: block;
-        width: 100%;
-        height: 400px;
-      }
-      daylight-curve-preview-panel .card-content {
-        padding: 16px;
-      }
-      daylight-curve-preview-panel .chart-error {
-        color: #b00020;
-        margin-top: 8px;
-        font-size: 13px;
-      }
-      daylight-curve-preview-panel .chart-legend {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 8px;
-      }
-      daylight-curve-preview-panel .lamp-swatch {
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
-        border: 1px solid rgba(0, 0, 0, 0.2);
-        background-color: #ddd;
-        margin-left: auto;
-        flex-shrink: 0;
-      }
-      @media (min-width: 1100px) {
-        daylight-curve-preview-panel .panel-grid {
-          grid-template-columns: minmax(320px, 480px) 1fr;
-        }
-        daylight-curve-preview-panel #chart-container {
-          position: sticky;
-          top: 24px;
-        }
-      }
-    `;
-    this.appendChild(style);
-
-    const wrapper = document.createElement("div");
-    wrapper.className = "panel-wrapper";
-
-    const grid = document.createElement("div");
-    grid.className = "panel-grid";
-
-    this._formContainer = document.createElement("div");
-    this._formContainer.textContent = "Loading…";
-    grid.appendChild(this._formContainer);
-
-    const chartContainer = document.createElement("div");
-    chartContainer.id = "chart-container";
-    this._chartContainer = chartContainer;
-
-    const card = document.createElement("ha-card");
-    card.header = "Curve Preview";
-
-    const cardContent = document.createElement("div");
-    cardContent.className = "card-content";
-
-    const legend = document.createElement("div");
-    legend.className = "chart-legend";
-    legend.innerHTML =
-      '<span style="color:#e69500;">■</span> Brightness (%)' +
-      "&nbsp;&nbsp;" +
-      '<span style="color:#1e88e5;">■</span> Color temp (K)';
-
-    this._lampSwatch = document.createElement("div");
-    this._lampSwatch.className = "lamp-swatch";
-    legend.appendChild(this._lampSwatch);
-
-    cardContent.appendChild(legend);
-
-    const canvas = document.createElement("canvas");
-    this._chartCanvas = canvas;
-    cardContent.appendChild(canvas);
-
-    canvas.addEventListener("mousemove", (event) => {
-      this._hoverIndex = this._indexForOffsetX(event.offsetX);
-      this._redraw();
-    });
-    canvas.addEventListener("mouseleave", () => {
-      this._hoverIndex = null;
-      this._redraw();
-    });
-
-    const chartErrorMessage = document.createElement("div");
-    chartErrorMessage.className = "chart-error";
-    chartErrorMessage.style.display = "none";
-    this._chartErrorMessage = chartErrorMessage;
-    cardContent.appendChild(chartErrorMessage);
-
-    card.appendChild(cardContent);
-    chartContainer.appendChild(card);
-
-    grid.appendChild(chartContainer);
-    wrapper.appendChild(grid);
-
-    this.appendChild(wrapper);
-
-    this._resizeObserver = new ResizeObserver(() => this._resizeCanvas());
-    this._resizeObserver.observe(canvas);
-
-    this._resizeCanvas();
+    this._resizeObserver.observe(this._chart);
+    if (this._hass) this._refresh();
   }
 
   disconnectedCallback() {
+    this._connected = false;
     this._resizeObserver?.disconnect();
-    clearTimeout(this._chartDebounceTimer);
+    // In-flight requests may finish, but can no longer update this view.
+    this._catalogId++;
+    this._requestId++;
   }
 
   set hass(hass) {
+    const first = !this._hass;
     this._hass = hass;
-
-    if (!this._fieldsFetched && hass) {
-      this._fetchFields();
-    } else if (this._formElement && hass) {
-      this._formElement.hass = hass;
-    }
+    if (first && this._connected) this._refresh();
   }
 
-  async _fetchFields() {
-    this._fieldsFetched = true;
+  _clear() {
+    this._data = null;
+    this._chart.replaceChildren();
+    this._values.replaceChildren();
+    this._timing.replaceChildren();
+    this._notes.textContent = "";
+    this._readout.textContent = "";
+    this._inspect.disabled = true;
+  }
 
+  async _refresh() {
+    if (!this._hass) return;
+    const id = ++this._catalogId;
+    ++this._requestId;
+    this._clear();
+    this._status.textContent = "Loading saved targets…";
+    this._target.disabled = true;
     try {
-      const schema = await this._hass.callApi("GET", "daylight/preview_fields");
-      this._schema = schema;
-
-      // Seed initial data with defaults from schema. Each top-level entry is
-      // an expandable section; recurse into its nested schema to seed
-      // defaults for the leaf fields, without clobbering existing values.
-      for (const section of schema) {
-        if (section.type !== "expandable") continue;
-
-        section.title = SECTION_TITLES[section.name] || section.name;
-
-        if (!(section.name in this._data)) {
-          this._data[section.name] = {};
-        }
-        const sectionData = this._data[section.name];
-
-        for (const field of section.schema) {
-          if (field.default !== undefined && !(field.name in sectionData)) {
-            sectionData[field.name] = field.default;
-          }
-        }
+      const catalog = await this._hass.callApi("GET", "daylight/preview_targets");
+      if (!this._connected || id !== this._catalogId) return;
+      const previous = this._target.value;
+      this._targets = catalog.targets;
+      this._target.replaceChildren(...catalog.targets.map((target) => {
+        const option = document.createElement("option");
+        option.value = `${target.entry_id}:${target.target_id}`;
+        option.textContent = target.name;
+        return option;
+      }));
+      if (catalog.targets.some((target) => `${target.entry_id}:${target.target_id}` === previous)) {
+        this._target.value = previous;
       }
-
-      this._renderForm();
-      await this._fetchAndDrawChart();
+      if (!this._date.value) this._date.value = catalog.today;
+      this._zone.textContent = `Times shown in ${catalog.timezone}.`;
+      this._target.disabled = !catalog.targets.length;
+      if (!catalog.targets.length) {
+        this._status.textContent = "No saved Daylight targets. Add lights in Home Assistant settings first.";
+        return;
+      }
+      await this._loadCurve();
     } catch (error) {
-      this._formContainer.textContent = "Error loading form";
-      console.error("Failed to fetch preview fields:", error);
+      if (!this._connected || id !== this._catalogId) return;
+      this._status.textContent = "Could not load targets. Use Refresh to try again.";
     }
   }
 
-  // Fetches a fresh curve sample from the server and redraws the chart.
-  // Safe to call multiple times: each call replaces the previous chart
-  // contents rather than appending to them. Called once from the initial
-  // fields fetch, and again from the debounced value-changed handler on
-  // every field edit. Captures this._chartRequestId on entry so that if a
-  // newer call starts before this one's response arrives, the stale
-  // response bails out silently instead of drawing or showing an error.
-  async _fetchAndDrawChart() {
-    const requestId = ++this._chartRequestId;
-
-    // Drop null/undefined leaf values from each section: optional
-    // time-selector fields the user never touched may end up null, and the
-    // backend's TimeSelector() will 400 on an explicit null, but an absent
-    // key is fine.
-    const cleanedData = {};
-    for (const [sectionName, sectionValue] of Object.entries(this._data)) {
-      const cleanedSection = {};
-      if (sectionValue && typeof sectionValue === "object") {
-        for (const [key, value] of Object.entries(sectionValue)) {
-          if (value !== null && value !== undefined) {
-            cleanedSection[key] = value;
-          }
-        }
-      }
-      cleanedData[sectionName] = cleanedSection;
+  async _loadCurve() {
+    const id = ++this._requestId;
+    this._clear();
+    const target = this._targets.find((item) => `${item.entry_id}:${item.target_id}` === this._target.value);
+    if (!target || !this._date.value) {
+      this._status.textContent = "Choose a target and date.";
+      return;
     }
-
-    const payload = {
-      ...cleanedData,
-      num_points: 96
-    };
-
+    this._status.textContent = "Loading saved curve…";
     try {
-      const response = await this._hass.callApi("POST", "daylight/sample_curve", payload);
-      if (requestId !== this._chartRequestId) return;
-      this._points = response.points;
-      this._sunrise = response.sunrise;
-      this._sunset = response.sunset;
-      this._chartErrorMessage.style.display = "none";
-      this._chartErrorMessage.textContent = "";
-      const colorTempBounds = payload.color_temp || {};
-      this._drawChart(
-        this._points,
-        colorTempBounds.min_color_temp_kelvin,
-        colorTempBounds.max_color_temp_kelvin,
-        response.sunrise,
-        response.sunset
+      const data = await this._hass.callApi("POST", "daylight/sample_curve", {
+        entry_id: target.entry_id, target_id: target.target_id, date: this._date.value
+      });
+      if (!this._connected || id !== this._requestId) return;
+      this._data = data;
+      this._status.textContent = target.name;
+      this._zone.textContent = `Times shown in ${data.timezone}.`;
+      this._inspect.max = data.points.length - 1;
+      this._inspect.value = 0;
+      this._inspect.disabled = false;
+      const notes = [];
+      if (data.timing.custom) notes.push("Custom timing rules are in use.");
+      if (data.timing.compressed) notes.push("Standard transitions shortened to fit the available time.");
+      if (data.timing.polar_fallback) notes.push("A solar crossing is unavailable. Automatic polar lighting anchors are in use; they are not actual sunrise/sunset events.");
+      this._notes.textContent = notes.join("\n");
+      for (const track of ["brightness", "color"]) {
+        const line = document.createElement("p");
+        const times = data.timing[track];
+        line.textContent = `${track === "brightness" ? "Brightness" : "Color"}: morning ${this._time(times.morning_start)} → ${this._time(times.morning_end)}; evening ${this._time(times.evening_start)} → ${this._time(times.evening_end)}.`;
+        this._timing.appendChild(line);
+      }
+      this._values.replaceChildren(...data.points.map((point) => {
+        const row = document.createElement("tr");
+        for (const value of [this._time(point.utc_time), `${point.brightness_pct}%`, `${point.color_temp_kelvin} K`]) {
+          const cell = document.createElement("td");
+          cell.textContent = value;
+          row.appendChild(cell);
+        }
+        return row;
+      }));
+      this._draw();
+    } catch (error) {
+      if (!this._connected || id !== this._requestId) return;
+      this._clear();
+      this._status.textContent = error?.body?.message || error?.message || "Could not load the saved curve. Check settings and refresh.";
+    }
+  }
+
+  _time(iso, short = false) {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: this._data.timezone, hour: "2-digit", minute: "2-digit",
+      ...(short ? {} : { month: "short", day: "numeric", timeZoneName: "short" })
+    }).format(new Date(iso));
+  }
+
+  _draw() {
+    if (!this._data) return;
+    const { points, ranges, sunrise, sunset } = this._data;
+    // Match viewBox units to CSS pixels so axis labels remain readable on phones.
+    const width = Math.max(320, this._chart.clientWidth || 1000);
+    this._chart.setAttribute("viewBox", `0 0 ${width} 360`);
+    const left = 65, right = width - 75, top = 25, bottom = 305;
+    const start = Date.parse(points[0].utc_time);
+    const end = Date.parse(points[points.length - 1].utc_time);
+    const x = (iso) => left + (Date.parse(iso) - start) / (end - start) * (right - left);
+    const yBrightness = (value) => bottom - value / 100 * (bottom - top);
+    const low = ranges.min_color_temp_kelvin, high = ranges.max_color_temp_kelvin;
+    const yColor = (value) => bottom - (value - low) / (high - low || 1) * (bottom - top);
+    const children = [];
+    for (let i = 0; i <= 4; i++) {
+      const y = top + i / 4 * (bottom - top);
+      const tick = new Date(start + i / 4 * (end - start)).toISOString();
+      children.push(
+        svgElement("line", { x1: left, x2: right, y1: y, y2: y, stroke: "var(--divider-color, #ccc)" }),
+        svgElement("text", { x: left - 8, y: y + 5, "text-anchor": "end", fill: "#c58200" }, `${100 - i * 25}%`),
+        svgElement("text", { x: right + 8, y: y + 5, fill: "#248bd2" }, `${Math.round(high - i / 4 * (high - low))}K`),
+        svgElement("text", { x: x(tick), y: bottom + 30, "text-anchor": "middle", fill: "currentColor" }, this._time(tick, true))
       );
-    } catch (error) {
-      if (requestId !== this._chartRequestId) return;
-      this._points = null;
-      this._sunrise = null;
-      this._sunset = null;
-      this._lastDrawArgs = null;
-      this._hoverIndex = null;
-      this._updateLamp(null);
-      console.error("Failed to fetch curve sample:", error);
-      this._clearChart();
-      this._chartErrorMessage.textContent = "Error loading curve";
-      this._chartErrorMessage.style.display = "";
     }
-  }
-
-  // Reads the CSS-determined display size of the canvas and syncs its
-  // device-pixel backing store to match, accounting for devicePixelRatio so
-  // strokes stay crisp on high-DPI screens. Called from the ResizeObserver
-  // whenever the canvas's layout size changes, and once up front from
-  // connectedCallback. Bails out before layout has settled (size still 0).
-  _resizeCanvas() {
-    const canvas = this._chartCanvas;
-    const displayWidth = canvas.clientWidth;
-    const displayHeight = canvas.clientHeight;
-    if (displayWidth === 0 || displayHeight === 0) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const targetWidth = Math.round(displayWidth * dpr);
-    const targetHeight = Math.round(displayHeight * dpr);
-    if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
+    for (const [key, y, stroke] of [["brightness_pct", yBrightness, "#c58200"], ["color_temp_kelvin", yColor, "#248bd2"]]) {
+      children.push(svgElement("polyline", {
+        points: points.map((point) => `${x(point.utc_time)},${y(point[key])}`).join(" "),
+        fill: "none", stroke, "stroke-width": 3, "vector-effect": "non-scaling-stroke"
+      }));
     }
-
-    this._chartDisplayWidth = displayWidth;
-    this._chartDisplayHeight = displayHeight;
-
-    this._redraw();
-  }
-
-  // Redraws using the most recent successful _drawChart args, without
-  // re-fetching from the server. Used by the ResizeObserver so a viewport
-  // resize doesn't trigger a network round-trip.
-  _redraw() {
-    if (this._lastDrawArgs) {
-      this._drawChart(...this._lastDrawArgs);
-    } else {
-      this._clearChart();
+    for (const [iso, name] of [[sunrise, "Sunrise"], [sunset, "Sunset"]]) {
+      if (!iso || Date.parse(iso) < start || Date.parse(iso) > end) continue;
+      children.push(
+        svgElement("line", { x1: x(iso), x2: x(iso), y1: top, y2: bottom, stroke: "currentColor", "stroke-dasharray": "4 4" }),
+        svgElement("text", { x: x(iso) + 5, y: top - 8, fill: "currentColor" }, name)
+      );
     }
-  }
-
-  // Maps a mousemove event's offsetX (CSS pixels relative to the canvas's
-  // own box) to the nearest sampled point index. Shares CHART_MARGIN with
-  // _drawChart so hit-testing always matches what's actually drawn.
-  _indexForOffsetX(offsetX) {
-    if (!this._points || this._points.length === 0) return null;
-
-    const margin = DaylightCurvePreviewPanel.CHART_MARGIN;
-    const width = this._chartDisplayWidth || this._chartCanvas.clientWidth;
-    const plotWidth = width - margin.left - margin.right;
-    if (plotWidth <= 0) return null;
-
-    const fraction = (offsetX - margin.left) / plotWidth;
-    const clamped = Math.max(0, Math.min(1, fraction));
-    return Math.round(clamped * (this._points.length - 1));
-  }
-
-  _clearChart() {
-    const canvas = this._chartCanvas;
-    const ctx = canvas.getContext("2d");
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-
-  // Renders the "preview lamp" swatch in the legend: an approximate sRGB
-  // color for the hovered (or, with no hover, the "now") point, computed
-  // from its color_temp_kelvin via kelvinToRgb, dimmed by its
-  // brightness_pct. Not a live HA light entity -- just a visual readout of
-  // the point already being shown by the crosshair/tooltip.
-  _updateLamp(point) {
-    if (!this._lampSwatch) return;
-
-    if (!point) {
-      this._lampSwatch.style.backgroundColor = "#ddd";
-      this._lampSwatch.title = "";
-      return;
-    }
-
-    const { r, g, b } = kelvinToRgb(point.color_temp_kelvin);
-    const factor = Math.max(0.15, point.brightness_pct / 100);
-    const dim = (channel) => Math.round(channel * factor);
-    this._lampSwatch.style.backgroundColor = `rgb(${dim(r)}, ${dim(g)}, ${dim(b)})`;
-    this._lampSwatch.title = `${point.brightness_pct}% · ${point.color_temp_kelvin}K`;
-  }
-
-  // Draws both series (brightness and color temp) over the same x-axis.
-  // Replaces the previous chart contents; does not append.
-  _drawChart(points, colorTempMin, colorTempMax, sunrise, sunset) {
-    this._lastDrawArgs = [points, colorTempMin, colorTempMax, sunrise, sunset];
-
-    this._clearChart();
-
-    if (!points || points.length === 0) {
-      console.warn("Curve sample returned no points:", points);
-      this._chartErrorMessage.textContent = "No curve data";
-      this._chartErrorMessage.style.display = "";
-      return;
-    }
-
-    const canvas = this._chartCanvas;
-    const ctx = canvas.getContext("2d");
-    const dpr = window.devicePixelRatio || 1;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const width = this._chartDisplayWidth || canvas.clientWidth;
-    const height = this._chartDisplayHeight || canvas.clientHeight;
-    const margin = DaylightCurvePreviewPanel.CHART_MARGIN;
-    const plotWidth = width - margin.left - margin.right;
-    const plotHeight = height - margin.top - margin.bottom;
-
-    const xForIndex = (index) =>
-      margin.left + (points.length > 1 ? (index / (points.length - 1)) * plotWidth : 0);
-
-    const yForBrightness = (value) => margin.top + plotHeight - (value / 100) * plotHeight;
-
-    const tempRange = colorTempMax - colorTempMin || 1;
-    const yForColorTemp = (value) =>
-      margin.top + plotHeight - ((value - colorTempMin) / tempRange) * plotHeight;
-
-    const firstTime = new Date(points[0].utc_time).getTime();
-    const lastTime = new Date(points[points.length - 1].utc_time).getTime();
-
-    // Horizontal gridlines at 5 evenly spaced heights; each height gets a
-    // left-axis brightness-% tick (amber, matches that series) and a
-    // right-axis color-temp-K tick (blue, matches that series) computed
-    // independently, since the two series have unrelated scales.
-    const GRID_LINE_COUNT = 4;
-    ctx.save();
-    ctx.font = "10px sans-serif";
-    ctx.textBaseline = "middle";
-    for (let i = 0; i <= GRID_LINE_COUNT; i++) {
-      const frac = i / GRID_LINE_COUNT;
-      const y = margin.top + frac * plotHeight;
-
-      ctx.beginPath();
-      ctx.strokeStyle = "#f2f2f2";
-      ctx.lineWidth = 1;
-      ctx.moveTo(margin.left, y);
-      ctx.lineTo(margin.left + plotWidth, y);
-      ctx.stroke();
-
-      const brightnessValue = Math.round(100 * (1 - frac));
-      ctx.fillStyle = "#e69500";
-      ctx.textAlign = "right";
-      ctx.fillText(`${brightnessValue}%`, margin.left - 6, y);
-
-      const colorTempValue = Math.round(colorTempMax - frac * (colorTempMax - colorTempMin));
-      ctx.fillStyle = "#1e88e5";
-      ctx.textAlign = "left";
-      ctx.fillText(`${colorTempValue}K`, margin.left + plotWidth + 6, y);
-    }
-    ctx.restore();
-
-    // X-axis time-of-day ticks at 5 evenly spaced points across the sampled
-    // window (quarter-window spacing -- 6h apart for the panel's current
-    // 24h/96-point window, but this stays correct if that window ever
-    // changes since it's fraction-of-range, not a hardcoded hour count).
-    const X_TICK_COUNT = 4;
-    ctx.save();
-    ctx.fillStyle = "#666";
-    ctx.font = "10px sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    for (let i = 0; i <= X_TICK_COUNT; i++) {
-      const frac = i / X_TICK_COUNT;
-      const x = margin.left + frac * plotWidth;
-      const tickTime = new Date(firstTime + frac * (lastTime - firstTime));
-      const label = tickTime.toLocaleTimeString([], { hour: "numeric", hour12: true });
-      ctx.fillText(label, x, margin.top + plotHeight + 6);
-    }
-    ctx.restore();
-
-    const drawSeries = (valueKey, yFor, strokeStyle) => {
-      ctx.beginPath();
-      ctx.strokeStyle = strokeStyle;
-      ctx.lineWidth = 2;
-      points.forEach((point, index) => {
-        const x = xForIndex(index);
-        const y = yFor(point[valueKey]);
-        if (index === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      });
-      ctx.stroke();
-    };
-
-    drawSeries("brightness_pct", yForBrightness, "#e69500");
-    drawSeries("color_temp_kelvin", yForColorTemp, "#1e88e5");
-
-    const drawSunMarker = (isoString, label, labelY) => {
-      if (!isoString) return;
-      const targetTime = new Date(isoString).getTime();
-      const fraction = (targetTime - firstTime) / (lastTime - firstTime);
-      if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) return;
-
-      const x = margin.left + fraction * plotWidth;
-
-      ctx.save();
-      ctx.strokeStyle = "#888";
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(x, margin.top);
-      ctx.lineTo(x, margin.top + plotHeight);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      ctx.fillStyle = "#888";
-      ctx.font = "10px sans-serif";
-      ctx.fillText(label, x + 2, labelY);
-      ctx.restore();
-    };
-
-    drawSunMarker(sunrise, "Sunrise", margin.top + 10);
-    drawSunMarker(sunset, "Sunset", margin.top + 22);
-
-    // "Preview lamp" always reflects the point nearest "now" (if "now" falls
-    // inside the sampled window) so it isn't just blank on page load, even
-    // when nothing is hovered. The crosshair + tooltip, in contrast, only
-    // appear while actively hovering -- they'd look stuck otherwise.
-    const now = Date.now();
-    const nowIndex =
-      now >= firstTime && now <= lastTime
-        ? Math.round(((now - firstTime) / (lastTime - firstTime)) * (points.length - 1))
-        : null;
-    const lampIndex =
-      this._hoverIndex !== null && this._hoverIndex !== undefined ? this._hoverIndex : nowIndex;
-    this._updateLamp(lampIndex !== null ? points[lampIndex] : null);
-
-    const activeIndex = this._hoverIndex;
-    const activePoint =
-      activeIndex !== null && activeIndex !== undefined ? points[activeIndex] : null;
-
-    if (activePoint) {
-      const x = xForIndex(activeIndex);
-
-      ctx.save();
-      ctx.strokeStyle = "#333";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x, margin.top);
-      ctx.lineTo(x, margin.top + plotHeight);
-      ctx.stroke();
-
-      ctx.fillStyle = "#e69500";
-      ctx.beginPath();
-      ctx.arc(x, yForBrightness(activePoint.brightness_pct), 3, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = "#1e88e5";
-      ctx.beginPath();
-      ctx.arc(x, yForColorTemp(activePoint.color_temp_kelvin), 3, 0, Math.PI * 2);
-      ctx.fill();
-
-      const timeLabel = new Date(activePoint.utc_time).toLocaleTimeString([], {
-        hour: "numeric",
-        minute: "2-digit"
-      });
-      const lines = [timeLabel, `${activePoint.brightness_pct}%`, `${activePoint.color_temp_kelvin}K`];
-      ctx.font = "11px sans-serif";
-      const lineHeight = 14;
-      const boxPadding = 6;
-      const textWidth = Math.max(...lines.map((line) => ctx.measureText(line).width));
-      const boxWidth = textWidth + boxPadding * 2;
-      const boxHeight = lines.length * lineHeight + boxPadding * 2;
-      let boxX = x + 8;
-      if (boxX + boxWidth > margin.left + plotWidth) {
-        boxX = x - 8 - boxWidth;
-      }
-      const boxY = margin.top + 4;
-
-      ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-      ctx.strokeStyle = "#ccc";
-      ctx.lineWidth = 1;
-      ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
-      ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
-
-      ctx.fillStyle = "#333";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "top";
-      lines.forEach((line, i) => {
-        ctx.fillText(line, boxX + boxPadding, boxY + boxPadding + i * lineHeight);
-      });
-      ctx.restore();
-    }
-  }
-
-  _renderForm() {
-    this._formContainer.innerHTML = "";
-
-    this._formElement = document.createElement("ha-form");
-    this._formElement.hass = this._hass;
-    this._formElement.schema = this._schema;
-    this._formElement.data = this._data;
-    this._formElement.computeLabel = (schema) => FIELD_LABELS[schema.name] || schema.name;
-
-    this._formElement.addEventListener("value-changed", (event) => {
-      this._data = event.detail.value;
-      this._formElement.data = this._data;
-
-      clearTimeout(this._chartDebounceTimer);
-      this._chartDebounceTimer = setTimeout(() => {
-        this._fetchAndDrawChart();
-      }, 300);
-    });
-
-    this._formContainer.appendChild(this._formElement);
+    const point = points[Number(this._inspect.value)];
+    children.push(svgElement("line", { x1: x(point.utc_time), x2: x(point.utc_time), y1: top, y2: bottom, stroke: "currentColor", opacity: 0.5 }));
+    this._readout.textContent = `${this._time(point.utc_time)} · ${point.brightness_pct}% · ${point.color_temp_kelvin} K`;
+    this._inspect.setAttribute("aria-valuetext", this._readout.textContent);
+    this._chart.replaceChildren(...children);
   }
 }
 

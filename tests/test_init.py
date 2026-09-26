@@ -3,8 +3,8 @@
 These exercise the real HA setup path (`hass.config_entries.async_setup`)
 against a `MockConfigEntry`, not a hand-rolled call to `async_setup_entry`,
 so platform forwarding (`switch.py`/`sensor.py`) is proven end to end.
-Expected `CurveSettings` values are literals set explicitly on `hass.config`
-and the entry's `data`, independent of how `async_setup_entry` builds them.
+Expected schedule values are literals set explicitly on `hass.config` and
+stored data, independent of how `async_setup_entry` builds them.
 """
 
 import datetime

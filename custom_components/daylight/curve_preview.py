@@ -1,96 +1,61 @@
-"""Sample the daylight curve over 24 hours, for a chart preview.
-
-This module deliberately has **no Home Assistant dependency**: no `hass`, no
-I/O, no `datetime.now()` -- `start` is passed in by the caller, same as
-`Target` in target.py. That keeps `sample_curve` a pure, synchronous function
-that can be called on demand to back a future frontend graphical curve
-preview (a custom HA panel, not built here -- this module only produces the
-sampled points, not any HTTP/websocket surface for delivering them).
-
-`start` must be timezone-aware: `CurveSettings.sun.sun_position` compares
-`dt.timestamp()` against astral event timestamps, so a naive `start` would
-silently compute against the wrong instant rather than raising.
-
-A brightness/color-temp mode or manually-set sunrise/sunset time far outside
-its day can make the underlying sun-event math raise `ValueError` for some
-sample instants (see `SunEvents._validate_sun_event_order`); that is not
-caught here and propagates to the caller, same as it does from
-`CurveSettings.brightness_factor`/`.color_factor` directly.
-"""
+"""Read-only sampling of a saved schedule over a complete local calendar day."""
 
 from __future__ import annotations
 
-import dataclasses
-import datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, time, timedelta
 
-from custom_components.daylight.color_and_brightness import CurveSettings, lerp
+from .adaptation import map_level
+from .schedule import Schedule
 
-# 15-minute spacing over 24h.
-DEFAULT_NUM_POINTS = 96
+# Includes both midnights: fifteen-minute intervals on an ordinary day.
+DEFAULT_NUM_POINTS = 97
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class CurvePoint:
-    """One sampled point of the daylight curve.
-
-    JSON-serializable via `dataclasses.asdict()`: `utc_time` is an ISO 8601
-    string, not a `datetime`, since `datetime` itself is not JSON-serializable.
-    """
-
     utc_time: str
     brightness_pct: int
     color_temp_kelvin: int
 
 
 def sample_curve(
-    curve_settings: CurveSettings,
+    schedule: Schedule,
     *,
-    start: datetime.datetime,
+    day: date,
     min_brightness_pct: int,
     max_brightness_pct: int,
     min_color_temp_kelvin: int,
     max_color_temp_kelvin: int,
     num_points: int = DEFAULT_NUM_POINTS,
 ) -> list[CurvePoint]:
-    """Sample brightness/color-temp across the 24h window starting at `start`.
+    """Sample the actual 23/24/25-hour span, including the following midnight.
 
-    Points are evenly spaced over a half-open 24h interval (`start` inclusive,
-    `start + 24h` exclusive), so `num_points` samples never duplicate the
-    first point at the end -- e.g. the default 96 points land exactly 15
-    minutes apart.
-
-    Mirrors `adaptation.compute_turn_on_kwargs`'s brightness/color-temp
-    mapping (same `lerp` call, same rounding), but always includes color
-    temperature regardless of any target's actual light capabilities -- this
-    previews the full curve a hub can produce, not a single light's command.
+    Values use the same range mapping as commands. They describe the target's
+    configured range, not a particular bulb's capability-clamped output.
     """
-    step = datetime.timedelta(hours=24) / num_points
+    if num_points < 2:
+        raise ValueError("At least two points are required.")
+    start = datetime.combine(day, time(), schedule.sun.timezone).astimezone(UTC)
+    end = datetime.combine(
+        day + timedelta(days=1),
+        time(),
+        schedule.sun.timezone,
+    ).astimezone(UTC)
+    step = (end - start) / (num_points - 1)
     points = []
     for i in range(num_points):
-        dt = start + step * i
-        brightness_pct = round(
-            lerp(
-                curve_settings.brightness_factor(dt),
-                x1=0.0,
-                x2=1.0,
-                y1=min_brightness_pct,
-                y2=max_brightness_pct,
-            )
-        )
-        color_temp_kelvin = round(
-            lerp(
-                curve_settings.color_factor(dt),
-                x1=0.0,
-                x2=1.0,
-                y1=min_color_temp_kelvin,
-                y2=max_color_temp_kelvin,
-            )
-        )
+        instant = start + step * i
+        brightness, color = schedule.evaluate(instant)
         points.append(
             CurvePoint(
-                utc_time=dt.isoformat(),
-                brightness_pct=brightness_pct,
-                color_temp_kelvin=color_temp_kelvin,
+                utc_time=instant.isoformat(),
+                brightness_pct=map_level(
+                    brightness, min_brightness_pct, max_brightness_pct
+                ),
+                color_temp_kelvin=map_level(
+                    color, min_color_temp_kelvin, max_color_temp_kelvin
+                ),
             )
         )
     return points

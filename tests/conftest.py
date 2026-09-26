@@ -1,7 +1,7 @@
 """Shared pytest fixtures for daylight tests.
 
 `enable_custom_integrations` is intentionally NOT autouse: pure-logic tests
-(color_and_brightness, target's manual-control state machine) run with no
+(schedule, target's manual-control state machine) run with no
 `hass` at all. Only tests that exercise the actual integration (coordinator,
 switch, config_flow, __init__) should request `enable_custom_integrations`
 explicitly.

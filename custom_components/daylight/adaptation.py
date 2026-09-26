@@ -11,12 +11,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from custom_components.daylight.color_and_brightness import lerp
-
 # Matches homeassistant.components.light.ColorMode.COLOR_TEMP's value.
 # Not imported to keep this module free of any HA dependency.
 COLOR_MODE_COLOR_TEMP = "color_temp"
 COLOR_MODES_WITHOUT_BRIGHTNESS = {"onoff", "unknown"}
+
+
+def map_level(factor: float, night: int, day: int) -> int:
+    """Map a normalized curve into the target's range, with shared rounding."""
+    return round(night + factor * (day - night))
 
 
 def compute_turn_on_kwargs(
@@ -37,14 +40,10 @@ def compute_turn_on_kwargs(
         return {}
 
     kwargs: dict[str, Any] = {
-        "brightness_pct": round(
-            lerp(
-                brightness_factor,
-                x1=0.0,
-                x2=1.0,
-                y1=min_brightness_pct,
-                y2=max_brightness_pct,
-            )
+        "brightness_pct": map_level(
+            brightness_factor,
+            min_brightness_pct,
+            max_brightness_pct,
         ),
     }
     # Lights without color_temp (rgb/hs/xy/onoff/brightness-only) get no
@@ -52,14 +51,10 @@ def compute_turn_on_kwargs(
     # feature, matching the prior decision to drop upstream's
     # prefer_rgb_color option.
     if COLOR_MODE_COLOR_TEMP in supported_color_modes:
-        color_temp = round(
-            lerp(
-                color_factor,
-                x1=0.0,
-                x2=1.0,
-                y1=min_color_temp_kelvin,
-                y2=max_color_temp_kelvin,
-            )
+        color_temp = map_level(
+            color_factor,
+            min_color_temp_kelvin,
+            max_color_temp_kelvin,
         )
         if device_min_color_temp_kelvin is not None:
             color_temp = max(color_temp, device_min_color_temp_kelvin)

@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
 from .coordinator import DayCoordinator
-from .http import PreviewFieldsView, SampleCurveView
+from .http import PreviewTargetsView, SampleCurveView
 from .schedule_config import async_schedule
 
 PLATFORMS = (Platform.SWITCH, Platform.SENSOR)
@@ -24,16 +24,9 @@ _PANEL_URL_PATH = f"/daylight_panel/{_PANEL_JS_NAME}"
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the domain-level curve-preview HTTP views and panel.
-
-    Not tied to any config entry -- the preview endpoints and panel have no
-    hub state of their own, so they're registered once here rather than
-    per-entry. `http` and `panel_custom` are declared in manifest.json's
-    `dependencies`, so `hass.http` is guaranteed to exist and `panel_custom`
-    guaranteed to be set up by the time this runs.
-    """
+    """Register read-only preview views and the optional panel once per domain."""
     hass.http.register_view(SampleCurveView())
-    hass.http.register_view(PreviewFieldsView())
+    hass.http.register_view(PreviewTargetsView())
 
     # cache_headers=False: the panel JS is still actively being built, so
     # dev iteration shouldn't fight a cached placeholder.

@@ -1,9 +1,7 @@
 """Tests for the `daylight-preview` custom frontend panel registration.
 
-Registration-only: the panel's real content (canvas, sliders, calls to the
-`sample_curve`/`preview_fields` endpoints) is a separate follow-up, so this
-only proves the pipeline end to end -- the panel is registered with the
-frontend, and the JS module it points at is actually served.
+Proves the panel is registered and its JavaScript module is served. Browser
+behavior is covered separately in panel.test.mjs.
 """
 
 from homeassistant.components import frontend

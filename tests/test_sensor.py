@@ -5,7 +5,7 @@ entry, built straight off `entry.runtime_data` -- no subentry iteration.
 Coordinator construction still needs the real `hass` fixture (see
 test_coordinator.py), but `coordinator.data` is set directly to a
 hand-built `DayState` rather than routed through a real refresh, so these
-tests don't depend on astral/CurveSettings math at all.
+tests don't depend on astronomical or schedule calculations.
 """
 
 import datetime
