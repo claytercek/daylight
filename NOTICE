@@ -13,3 +13,7 @@ the brightness/color curve functions were rewritten to emit normalized
 [0, 1] factors instead of values baked against a config entry's min/max
 brightness and color temperature, and sleep-mode and legacy RGB-only-color
 branches were removed as out of scope for this project.
+
+custom_components/daylight/solar.py adapts the solar-phase diagnostic and
+one-hour polar fallback from that same source. It resolves local dates to UTC
+and distinguishes actual astronomical events from synthetic lighting anchors.
