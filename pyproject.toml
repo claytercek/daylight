@@ -14,6 +14,9 @@ dev = [
     "ty>=0.0.83",
 ]
 
+[tool.ty.rules]
+missing-type-argument = "error"
+
 [tool.ruff]
 target-version = "py313"
 

@@ -89,7 +89,7 @@ async def test_schema_rejection_for_one_member_does_not_stop_another(
     )
     calls: list[ServiceCall] = []
 
-    def accept_hall(data: dict) -> dict:
+    def accept_hall(data: dict[str, object]) -> dict[str, object]:
         if data["entity_id"] == KITCHEN_LIGHT:
             raise vol.Invalid("kitchen command rejected")
         return data

@@ -7,6 +7,7 @@ string update fails this test.
 
 import json
 from pathlib import Path
+from typing import Any
 
 import voluptuous as vol
 from homeassistant.data_entry_flow import section
@@ -18,7 +19,9 @@ _STRINGS_PATH = _COMPONENT_DIR / "strings.json"
 _TRANSLATIONS_PATH = _COMPONENT_DIR / "translations" / "en.json"
 
 
-def _assert_step_has_strings(schema: vol.Schema, step: dict, path: str) -> None:
+def _assert_step_has_strings(
+    schema: vol.Schema, step: dict[str, Any], path: str
+) -> None:
     """Assert `step` carries a string for every field/section in `schema`.
 
     Plain fields live at `<path>.data.<key>`; a section contributes its own

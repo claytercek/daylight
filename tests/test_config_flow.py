@@ -473,7 +473,7 @@ async def test_target_reconfigure_replaces_subentry_data(
     assert entry.subentries[subentry_id].data == {**_TARGET_DATA, "transition": 5.0}
 
 
-def _suggested_values(schema) -> dict:
+def _suggested_values(schema) -> dict[str, object]:
     """Read back the suggested value a shown form carries for every field."""
     values = {}
     for key, value in schema.schema.items():
