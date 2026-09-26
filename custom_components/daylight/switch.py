@@ -15,7 +15,7 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import Context, Event, HomeAssistant, callback
+from homeassistant.core import Context, Event, HomeAssistant, State, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
     EventStateChangedData,
@@ -37,6 +37,31 @@ TARGET_SUBENTRY_TYPE = "target"
 BRIGHTNESS_KWARG = "brightness_pct"
 COLOR_TEMP_KWARG = "color_temp_kelvin"
 TRANSITION_KWARG = "transition"
+CONTROL_ATTRIBUTES = frozenset(
+    {
+        "brightness",
+        "color_mode",
+        "color_temp",
+        "color_temp_kelvin",
+        "effect",
+        "hs_color",
+        "rgb_color",
+        "rgbw_color",
+        "rgbww_color",
+        "white",
+        "xy_color",
+    }
+)
+
+
+def _has_control_change(old_state: State, new_state: State) -> bool:
+    """Ignore metadata updates and attributes reported while the light is off."""
+    if old_state.state != new_state.state:
+        return True
+    return new_state.state == STATE_ON and any(
+        old_state.attributes.get(key) != new_state.attributes.get(key)
+        for key in CONTROL_ATTRIBUTES
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -112,6 +137,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._attr_unique_id = f"{subentry.subentry_id}_adapt"
         self._attr_name = f"{subentry.title} adapt"
         self._attr_is_on = False
+        self._send_tasks: dict[str, asyncio.Task[None]] = {}
 
     @property
     def extra_restore_state_data(self) -> TargetStoredData:
@@ -137,21 +163,19 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                 self.hass, self._settings.entities, self._async_member_state_changed
             )
         )
+        self.async_on_remove(self._cancel_pending_sends)
 
     @callback
     def _async_member_state_changed(
         self, event: Event[EventStateChangedData]
     ) -> None:
-        """Feed every member state change into the manual-control tracker.
+        """Feed member control changes into the manual-control tracker.
 
-        Every change except an availability one -- a member hand-dimmed while
-        this switch is off must still come back flagged manual so that turning
-        the switch on is what resolves it, but a light dropping off the network
-        and coming back is not a person touching it. That skip is load-bearing
-        rather than tidiness: without it a bare reconnect flags manual on its
-        `on->unavailable` leg, and the following `unavailable->on` then neither
-        clears that flag (only off->on does) nor adapts (the clear-vs-adapt
-        split below gates adapting on it) -- stuck manual for good.
+        A member hand-dimmed while this switch is off stays flagged manual
+        until adaptation resumes. Availability and metadata-only changes are
+        skipped: neither is evidence of a person changing light controls.
+        Without the availability skip, a bare reconnect flags manual on its
+        `on->unavailable` leg, and `unavailable->on` cannot clear that flag.
 
         There is deliberately no service-call target resolution anywhere in
         this module: detection is purely `state_changed`-based (never
@@ -168,10 +192,18 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             or old_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
             or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
         )
-        if not availability_change:
-            self._target.observe_state_change(
-                entity_id, event.context.id, timestamp=event.time_fired.timestamp()
+        if not availability_change and _has_control_change(old_state, new_state):
+            manual = self._target.observe_state_change(
+                entity_id,
+                event.context.id,
+                timestamp=event.time_fired.timestamp(),
+                parent_id=event.context.parent_id,
+                user_id=event.context.user_id,
             )
+            if manual:
+                self._cancel_send(entity_id)
+        if new_state is None or new_state.state != STATE_ON:
+            self._cancel_send(entity_id)
 
         # Deliberately not an `else`: a light reconnecting straight back to
         # `on` still needs its immediate adaptation correction below. Every
@@ -208,9 +240,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             return
         # Freshly computed, never `coordinator.data`: the last poll can be
         # most of an interval old by the time a light is switched on.
-        self._async_adapt(
-            entity_id, self.coordinator.compute_day_state(now), now.timestamp()
-        )
+        self._async_adapt(entity_id, self.coordinator.compute_day_state(now))
 
     async def async_turn_on(self, **kwargs) -> None:
         """Resume adaptation for this target.
@@ -226,21 +256,36 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         regardless of `adapt_only_on_state_change`, which gates the periodic
         tick only -- in that mode it is the sole thing that can undo a scene.
         """
-        if not self.is_on:
+        was_off = not self.is_on
+        self._attr_is_on = True
+        if was_off:
             self._target.clear_all_manual_flags()
             now = dt_util.utcnow()
             # Freshly computed, never `coordinator.data`: the last poll can be
             # most of an interval old by the time adaptation is resumed.
             day_state = self.coordinator.compute_day_state(now)
             for entity_id in self._settings.entities:
-                self._async_adapt(entity_id, day_state, now.timestamp())
-        self._attr_is_on = True
+                self._async_adapt(entity_id, day_state)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
         """Pause adaptation for this target."""
         self._attr_is_on = False
+        self._cancel_pending_sends()
         self.async_write_ha_state()
+
+    @callback
+    def _cancel_send(self, entity_id: str) -> None:
+        """Stop a member's pending command sequence."""
+        task = self._send_tasks.pop(entity_id, None)
+        if task is not None:
+            task.cancel()
+
+    @callback
+    def _cancel_pending_sends(self) -> None:
+        """Stop pending commands when adaptation pauses or the entity unloads."""
+        for entity_id in tuple(self._send_tasks):
+            self._cancel_send(entity_id)
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -257,11 +302,11 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         for entity_id in self._settings.entities:
             if self._target.is_manual(entity_id, now=now):
                 continue
-            self._async_adapt(entity_id, day_state, now)
+            self._async_adapt(entity_id, day_state)
 
     @callback
-    def _async_adapt(self, entity_id: str, day_state: DayState, now: float) -> None:
-        """Record and dispatch one member's adaptation command.
+    def _async_adapt(self, entity_id: str, day_state: DayState) -> None:
+        """Queue one member's adaptation command.
 
         Adapting pushes values onto a light that is already on; it never
         turns one on. Guarding here rather than in each caller covers the
@@ -269,9 +314,16 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         switch off members back on -- and is a harmless no-op for the
         not-on->on correction, which has already established the member is on.
         """
+        # Finish the current split before considering another poll. Replacing
+        # it on every tick could postpone the color command indefinitely when
+        # the poll interval is shorter than the configured split delay.
+        if entity_id in self._send_tasks:
+            return
         state = self.hass.states.get(entity_id)
         if state is None or state.state != STATE_ON:
             return
+        min_color_temp = state.attributes.get("min_color_temp_kelvin")
+        max_color_temp = state.attributes.get("max_color_temp_kelvin")
         kwargs = compute_turn_on_kwargs(
             supported_color_modes=set(
                 state.attributes.get("supported_color_modes") or []
@@ -283,48 +335,75 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             min_color_temp_kelvin=self._settings.min_color_temp_kelvin,
             max_color_temp_kelvin=self._settings.max_color_temp_kelvin,
             transition=self._settings.transition,
+            device_min_color_temp_kelvin=(
+                min_color_temp if isinstance(min_color_temp, int) else None
+            ),
+            device_max_color_temp_kelvin=(
+                max_color_temp if isinstance(max_color_temp, int) else None
+            ),
         )
+        if not kwargs:
+            return
         context = Context()
-        # A split send issues its second part `send_split_delay` late, so that
-        # part's own post-transition report lands that much later too. Added
-        # unconditionally rather than only when there really are two parts:
-        # over-suppressing a single-kwarg command by a few seconds is harmless.
-        transition_seconds = self._settings.transition
-        if self._settings.separate_turn_on_commands:
-            transition_seconds += self._settings.send_split_delay
-        # Strictly before the service call, and synchronously, so the
-        # resulting state report can never race this bookkeeping.
-        self._target.record_command(
-            entity_id,
-            context.id,
-            kwargs,
-            transition_seconds=transition_seconds,
-            now=now,
-        )
-        self.hass.async_create_task(self._async_send(entity_id, kwargs, context))
+        task = self.hass.async_create_task(self._async_send(entity_id, kwargs, context))
+        self._send_tasks[entity_id] = task
+        task.add_done_callback(lambda done: self._finish_send(entity_id, done))
+
+    @callback
+    def _finish_send(self, entity_id: str, task: asyncio.Task[None]) -> None:
+        if self._send_tasks.get(entity_id) is task:
+            del self._send_tasks[entity_id]
 
     async def _async_send(
         self, entity_id: str, kwargs: dict[str, Any], context: Context
     ) -> None:
         """Issue the `light.turn_on` call(s) for one member."""
-        if not self._settings.separate_turn_on_commands:
-            await self._async_turn_on(entity_id, kwargs, context)
-            return
-
         # Some bulbs drop one attribute when both arrive together; splitting
         # is pure I/O ordering, so it lives here rather than in adaptation.py.
-        shared = {
-            key: value for key, value in kwargs.items() if key == TRANSITION_KWARG
-        }
-        parts = [
-            {**shared, key: kwargs[key]}
-            for key in (BRIGHTNESS_KWARG, COLOR_TEMP_KWARG)
-            if key in kwargs
-        ]
+        if self._settings.separate_turn_on_commands:
+            shared = {
+                key: value for key, value in kwargs.items() if key == TRANSITION_KWARG
+            }
+            parts = [
+                {**shared, key: kwargs[key]}
+                for key in (BRIGHTNESS_KWARG, COLOR_TEMP_KWARG)
+                if key in kwargs
+            ]
+        else:
+            parts = [kwargs]
+
+        if not parts or not self._can_send(entity_id):
+            return
+        # Record immediately before dispatch, after task scheduling. A split
+        # needs a window long enough for its delayed second report; a one-part
+        # command needs only its transition and reporting grace.
+        transition_seconds = self._settings.transition
+        if len(parts) > 1:
+            transition_seconds += self._settings.send_split_delay
+        self._target.record_command(
+            entity_id,
+            context.id,
+            transition_seconds=transition_seconds,
+            now=dt_util.utcnow().timestamp(),
+        )
         for index, part in enumerate(parts):
             if index:
                 await asyncio.sleep(self._settings.send_split_delay)
+                if not self._can_send(entity_id):
+                    return
             await self._async_turn_on(entity_id, part, context)
+
+    def _can_send(self, entity_id: str) -> bool:
+        """Check the live state before either part of a queued command."""
+        state = self.hass.states.get(entity_id)
+        return (
+            self.is_on is True
+            and state is not None
+            and state.state == STATE_ON
+            and not self._target.is_manual(
+                entity_id, now=dt_util.utcnow().timestamp()
+            )
+        )
 
     async def _async_turn_on(
         self, entity_id: str, data: dict[str, Any], context: Context

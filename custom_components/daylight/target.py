@@ -54,14 +54,6 @@ class TargetConfig:
 class _EntityState:
     """Per-entity bookkeeping."""
 
-    last_commanded: dict[str, Any] = field(default_factory=dict)
-    """Attributes of the most recent command.
-
-    Kept for bookkeeping and persistence only: manual detection is decided by
-    context id and suppression window, never by comparing reported values
-    against these.
-    """
-
     own_context_ids: deque[str] = field(
         default_factory=lambda: deque(maxlen=OWN_CONTEXT_MAXLEN)
     )
@@ -73,7 +65,6 @@ class _EntityState:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "last_commanded": dict(self.last_commanded),
             "own_context_ids": list(self.own_context_ids),
             "suppress_until": self.suppress_until,
             "manual": self.manual,
@@ -83,7 +74,6 @@ class _EntityState:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> _EntityState:
         return cls(
-            last_commanded=dict(data["last_commanded"]),
             own_context_ids=deque(
                 data["own_context_ids"], maxlen=OWN_CONTEXT_MAXLEN
             ),
@@ -110,7 +100,6 @@ class Target:
         self,
         entity_id: str,
         context_id: str,
-        attrs: dict[str, Any],
         transition_seconds: float = 0.0,
         *,
         now: float,
@@ -121,7 +110,6 @@ class Target:
         that a state report can never race the bookkeeping that recognises it.
         """
         state = self._state(entity_id)
-        state.last_commanded = dict(attrs)
         state.own_context_ids.append(context_id)
         # Extend, never retract: a short command issued while a long fade is
         # still running must not expose the fade's own final report.
@@ -131,11 +119,22 @@ class Target:
         )
 
     def observe_state_change(
-        self, entity_id: str, context_id: str, *, timestamp: float
+        self,
+        entity_id: str,
+        context_id: str,
+        *,
+        timestamp: float,
+        parent_id: str | None = None,
+        user_id: str | None = None,
     ) -> bool:
         """Feed in a state change; return whether it was flagged as manual."""
         state = self._state(entity_id)
-        if context_id in state.own_context_ids or timestamp <= state.suppress_until:
+        if context_id in state.own_context_ids or parent_id in state.own_context_ids:
+            return False
+        # A user-authored context is stronger evidence than the timing window.
+        # Context-free reports inside the window remain ambiguous: the light
+        # may be reporting the end of our transition under a fresh context.
+        if user_id is None and timestamp <= state.suppress_until:
             return False
         state.manual = True
         state.manual_since = timestamp
@@ -177,9 +176,6 @@ class Target:
 
         Config is not included: the caller supplies it again to `from_dict`.
 
-        `last_commanded` is passed through as handed in, so tuple-valued
-        attributes (`rgb_color`) come back from JSON as lists. Nothing reads
-        `last_commanded` to decide anything, so this is left as is.
         """
         return {
             "entities": {

@@ -23,7 +23,7 @@ def _target(**kwargs) -> Target:
 def test_state_change_with_own_context_is_not_manual() -> None:
     """Command issued with context C1 at t=0; C1 reports back at t=1 -> ours."""
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=0.0)
+    target.record_command(LIGHT, "C1", 0.0, now=0.0)
 
     flagged = target.observe_state_change(LIGHT, "C1", timestamp=1.0)
 
@@ -38,7 +38,7 @@ def test_own_context_is_registered_the_instant_record_command_returns() -> None:
     time -- must already be recognised as ours.
     """
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=0.0)
+    target.record_command(LIGHT, "C1", 0.0, now=0.0)
 
     assert target.observe_state_change(LIGHT, "C1", timestamp=0.0) is False
 
@@ -50,9 +50,29 @@ def test_own_context_is_recognised_on_the_commanded_entity_only() -> None:
     report on the den is somebody else's business and counts as manual.
     """
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=0.0)
+    target.record_command(LIGHT, "C1", 0.0, now=0.0)
 
     assert target.observe_state_change("light.den", "C1", timestamp=100.0) is True
+
+
+def test_own_parent_context_is_not_manual() -> None:
+    target = _target()
+    target.record_command(LIGHT, "C1", 0.0, now=0.0)
+
+    assert (
+        target.observe_state_change(LIGHT, "CHILD", timestamp=100.0, parent_id="C1")
+        is False
+    )
+
+
+def test_explicit_user_context_overrides_suppression_window() -> None:
+    target = _target()
+    target.record_command(LIGHT, "C1", 30.0, now=0.0)
+
+    assert (
+        target.observe_state_change(LIGHT, "HUMAN", timestamp=1.0, user_id="user")
+        is True
+    )
 
 
 def test_late_report_with_fresh_context_is_suppressed_during_transition() -> None:
@@ -64,7 +84,7 @@ def test_late_report_with_fresh_context_is_suppressed_during_transition() -> Non
     so it is ours, not a human's.
     """
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+    target.record_command(LIGHT, "C1", 5.0, now=0.0)
 
     assert target.observe_state_change(LIGHT, "C2", timestamp=6.5) is False
 
@@ -77,8 +97,8 @@ def test_a_short_command_does_not_retract_a_long_transitions_window() -> None:
     report at t=40 would look like a human.
     """
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 45.0, now=0.0)
-    target.record_command(LIGHT, "C2", {"color_temp_kelvin": 3000}, 0.0, now=2.0)
+    target.record_command(LIGHT, "C1", 45.0, now=0.0)
+    target.record_command(LIGHT, "C2", 0.0, now=2.0)
 
     assert target.observe_state_change(LIGHT, "C3", timestamp=40.0) is False
 
@@ -86,7 +106,7 @@ def test_a_short_command_does_not_retract_a_long_transitions_window() -> None:
 def test_unknown_context_after_the_window_closes_is_manual() -> None:
     """Same command, but the report arrives at t=20 -- long past 5s + 2s."""
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+    target.record_command(LIGHT, "C1", 5.0, now=0.0)
 
     assert target.observe_state_change(LIGHT, "C3", timestamp=20.0) is True
 
@@ -94,7 +114,7 @@ def test_unknown_context_after_the_window_closes_is_manual() -> None:
 def test_hand_dim_sets_the_manual_flag() -> None:
     """Somebody turns the dimmer at t=20; the light stops being adapted."""
     target = _target()
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+    target.record_command(LIGHT, "C1", 5.0, now=0.0)
 
     target.observe_state_change(LIGHT, "HUMAN", timestamp=20.0)
 
@@ -106,7 +126,7 @@ def test_manual_flag_is_not_cleared_by_a_later_recognised_report() -> None:
     target = _target()
     target.observe_state_change(LIGHT, "HUMAN", timestamp=20.0)
 
-    target.record_command(LIGHT, "C2", {"brightness": 200}, 0.0, now=30.0)
+    target.record_command(LIGHT, "C2", 0.0, now=30.0)
     target.observe_state_change(LIGHT, "C2", timestamp=30.5)
 
     assert target.is_manual(LIGHT, now=31.0) is True
@@ -140,7 +160,7 @@ def test_detection_resumes_after_an_auto_clear() -> None:
     target.observe_state_change(LIGHT, "HUMAN", timestamp=100.0)
     assert target.is_manual(LIGHT, now=1000.0 + 100.0) is False
 
-    target.record_command(LIGHT, "C1", {"brightness": 128}, 0.0, now=1100.0)
+    target.record_command(LIGHT, "C1", 0.0, now=1100.0)
 
     assert target.observe_state_change(LIGHT, "C1", timestamp=1100.5) is False
     assert target.is_manual(LIGHT, now=1101.0) is False
@@ -185,7 +205,7 @@ def test_own_context_ring_is_bounded_at_sixteen() -> None:
     """
     target = _target()
     for i in range(17):
-        target.record_command(LIGHT, f"C{i}", {"brightness": 128}, 0.0, now=i * 60.0)
+        target.record_command(LIGHT, f"C{i}", 0.0, now=i * 60.0)
 
     assert target.observe_state_change(LIGHT, "C0", timestamp=10_000.0) is True
     assert target.observe_state_change(LIGHT, "C1", timestamp=10_000.0) is False
@@ -195,20 +215,18 @@ def test_own_context_ring_is_bounded_at_sixteen() -> None:
 def test_dumped_state_is_json_serializable() -> None:
     """A future RestoreEntity stores this verbatim, so no custom encoding.
 
-    Known limitation: `last_commanded` is passed through as given, so a tuple
-    attribute such as `rgb_color` comes back from JSON as a list. Nothing reads
-    `last_commanded` to make a decision, so the asymmetry is harmless; every
-    field that *does* drive detection survives the round trip intact.
+    Every field that drives detection must survive the round trip intact.
     """
     target = _target(manual_control_reset_minutes=15)
     target.record_command(
-        LIGHT, "C1", {"brightness": 128, "rgb_color": (255, 180, 90)}, 5.0, now=0.0
+        LIGHT, "C1", 5.0, now=0.0
     )
     target.observe_state_change("light.den", "HUMAN", timestamp=10.0)
 
     restored = json.loads(json.dumps(target.to_dict()))
 
     for entity_id, state in target.to_dict()["entities"].items():
+        assert "last_commanded" not in state
         for key in ("own_context_ids", "suppress_until", "manual", "manual_since"):
             assert restored["entities"][entity_id][key] == state[key]
 
@@ -217,7 +235,7 @@ def test_restored_target_keeps_flags_contexts_and_windows() -> None:
     """Reload mid-transition: nothing the target knew is lost."""
     config = TargetConfig(manual_control_reset_minutes=15)
     before = Target(config)
-    before.record_command(LIGHT, "C1", {"brightness": 128}, 5.0, now=0.0)
+    before.record_command(LIGHT, "C1", 5.0, now=0.0)
     before.observe_state_change("light.den", "HUMAN", timestamp=10.0)
 
     after = Target.from_dict(config, before.to_dict())
@@ -244,10 +262,10 @@ def test_restored_own_context_ring_is_still_bounded() -> None:
     config = TargetConfig()
     before = Target(config)
     for i in range(16):
-        before.record_command(LIGHT, f"C{i}", {"brightness": 128}, 0.0, now=i * 60.0)
+        before.record_command(LIGHT, f"C{i}", 0.0, now=i * 60.0)
 
     after = Target.from_dict(config, before.to_dict())
-    after.record_command(LIGHT, "C16", {"brightness": 128}, 0.0, now=10_000.0)
+    after.record_command(LIGHT, "C16", 0.0, now=10_000.0)
 
     assert after.observe_state_change(LIGHT, "C0", timestamp=20_000.0) is True
     assert after.observe_state_change(LIGHT, "C1", timestamp=20_000.0) is False

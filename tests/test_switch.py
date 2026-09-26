@@ -1,170 +1,30 @@
-"""Tests for the per-target adaptation switch.
+"""Adaptation switch behavior and manual-control integration tests."""
 
-These drive the real HA setup path (`hass.config_entries.async_setup` against
-a `MockConfigEntry` carrying target subentries), because `switch.py` is an
-adapter: almost everything it can get wrong is in the wiring, not in any
-computation it does itself.
-"""
-
-import dataclasses
 import datetime
-import time
 from unittest.mock import patch
 
-from homeassistant.config_entries import ConfigSubentryData
+import pytest
 from homeassistant.core import Context, State
-from homeassistant.helpers import entity_component
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
     async_mock_service,
     mock_restore_cache,
 )
 
-from custom_components.daylight.const import DOMAIN
-from custom_components.daylight.coordinator import DayState
-
-_HUB_DATA = {
-    "sunrise_time": "06:30:00",
-    "min_sunrise_time": None,
-    "max_sunrise_time": None,
-    "sunset_time": None,
-    "min_sunset_time": None,
-    "max_sunset_time": None,
-    "sunrise_offset_minutes": 0,
-    "sunset_offset_minutes": 0,
-    "brightness_mode": "default",
-    "brightness_mode_time_dark_minutes": 45,
-    "brightness_mode_time_light_minutes": 45,
-    "update_interval_seconds": 90,
-}
-
-_TARGET_DATA = {
-    "entities": ["light.kitchen"],
-    "min_brightness_pct": 10,
-    "max_brightness_pct": 90,
-    "min_color_temp_kelvin": 2000,
-    "max_color_temp_kelvin": 5500,
-    "transition": 4.0,
-    "adapt_only_on_state_change": False,
-    "manual_control_reset_minutes": 0,
-    "separate_turn_on_commands": False,
-    "send_split_delay": 0.0,
-}
-
-KITCHEN_SWITCH = "switch.kitchen_adapt"
-KITCHEN_LIGHT = "light.kitchen"
-HALL_LIGHT = "light.hall"
-
-# Stand-in for whatever `adaptation.compute_turn_on_kwargs` would really
-# return. `switch.py` must forward these keys verbatim, so the expected
-# service-call data below is this literal, never a recomputation.
-_STUB_KWARGS = {
-    "brightness_pct": 62,
-    "color_temp_kelvin": 3200,
-    "transition": 4.0,
-}
-
-# Literal factors, not read back off the coordinator: the assertion is that
-# these exact values reach `compute_turn_on_kwargs`.
-_DAY_STATE = DayState(
-    utc_now=datetime.datetime(2024, 6, 1, 15, 0, tzinfo=datetime.UTC),
-    sun_position=0.5,
-    brightness_factor=0.75,
-    color_factor=0.4,
-    is_above_horizon=True,
-    next_sunrise=datetime.datetime(2024, 6, 2, 9, 30, tzinfo=datetime.UTC),
-    next_sunset=datetime.datetime(2024, 6, 1, 23, 30, tzinfo=datetime.UTC),
+from tests.switch_support import (
+    _DAY_STATE,
+    _STALE_DAY_STATE,
+    _STUB_KWARGS,
+    HALL_LIGHT,
+    KITCHEN_LIGHT,
+    KITCHEN_SWITCH,
+    _set_light,
+    _setup,
+    _switch_entity,
+    _target_subentry,
+    _tick,
+    _turn_switch_on,
 )
-
-# Deliberately different factors from `_DAY_STATE`, to stand in for a cached
-# `coordinator.data` that has gone stale since the last poll.
-_STALE_DAY_STATE = dataclasses.replace(
-    _DAY_STATE, brightness_factor=0.01, color_factor=0.02
-)
-
-
-def _target_subentry(title="Kitchen", **overrides) -> ConfigSubentryData:
-    return ConfigSubentryData(
-        data={**_TARGET_DATA, **overrides},
-        subentry_type="target",
-        title=title,
-        unique_id=None,
-    )
-
-
-async def _setup(
-    hass, hass_config_dir, subentries, lights=(KITCHEN_LIGHT,)
-) -> MockConfigEntry:
-    """Set up a hub entry, with member lights already present.
-
-    Seeding the member states *before* setup matters: once the switch entity
-    exists it observes every member `state_changed`, so a state written
-    afterwards under a foreign context would be flagged manual.
-    """
-    for entity_id in lights:
-        _set_light(hass, entity_id)
-
-    hass.config.config_dir = hass_config_dir
-    hass.config.latitude = 40.7128
-    hass.config.longitude = -74.0060
-    hass.config.elevation = 10
-    await hass.config.async_set_time_zone("America/New_York")
-
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Test Hub",
-        data=_HUB_DATA,
-        subentries_data=subentries,
-    )
-    entry.add_to_hass(hass)
-
-    assert await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-    return entry
-
-
-def _set_light(
-    hass,
-    entity_id=KITCHEN_LIGHT,
-    state="on",
-    color_modes=("color_temp",),
-    context=None,
-    brightness=128,
-):
-    """Write a member light's state.
-
-    `brightness` exists so consecutive writes actually differ: hass fires
-    `state_reported`, not `state_changed`, when state and attributes are
-    unchanged, and only the latter reaches the switch's listener.
-    """
-    hass.states.async_set(
-        entity_id,
-        state,
-        {"supported_color_modes": list(color_modes), "brightness": brightness},
-        context=context,
-    )
-
-
-def _switch_entity(hass, entity_id=KITCHEN_SWITCH):
-    """Reach the live entity object, for assertions on its `Target`."""
-    return hass.data[entity_component.DATA_INSTANCES]["switch"].get_entity(entity_id)
-
-
-async def _turn_switch_on(hass, switch=KITCHEN_SWITCH) -> None:
-    await hass.services.async_call(
-        "switch", "turn_on", {"entity_id": switch}, blocking=True
-    )
-    # Turning on adapts every on member, and dispatches each command as a
-    # task, so `blocking=True` alone does not land the service calls.
-    await hass.async_block_till_done()
-
-
-async def _tick(hass, entry, day_state=_DAY_STATE) -> None:
-    """Push a fresh `DayState` through the coordinator, as a poll would."""
-    entry.runtime_data.async_set_updated_data(day_state)
-    await hass.async_block_till_done()
 
 
 async def test_one_switch_entity_per_target_subentry_defaults_off(
@@ -233,9 +93,69 @@ async def test_coordinator_tick_adapts_each_member_light(
         min_color_temp_kelvin=2000,
         max_color_temp_kelvin=5500,
         transition=4.0,
+        device_min_color_temp_kelvin=None,
+        device_max_color_temp_kelvin=None,
     )
     assert len(calls) == 1
     assert calls[0].data == {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS}
+
+
+async def test_onoff_only_light_receives_no_adaptation_command(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    _set_light(hass, color_modes=("onoff",))
+    await hass.async_block_till_done()
+
+    await _turn_switch_on(hass)
+    await _tick(hass, entry)
+
+    assert calls == []
+
+
+async def test_device_color_temperature_bounds_reach_light_command(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+    hass.states.async_set(
+        KITCHEN_LIGHT,
+        "on",
+        {
+            "supported_color_modes": ["color_temp"],
+            "brightness": 128,
+            "min_color_temp_kelvin": 4000,
+            "max_color_temp_kelvin": 4500,
+        },
+        context=Context(),
+    )
+    await hass.async_block_till_done()
+
+    await _tick(hass, entry)
+
+    assert len(calls) == 1
+    assert calls[0].data["color_temp_kelvin"] == 4000
+
+
+async def test_group_target_receives_one_command_as_one_light(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    group = "light.living_room_group"
+    await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry("Living Room", entities=[group])],
+        lights=(group,),
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+
+    await _turn_switch_on(hass, "switch.living_room_adapt")
+
+    assert len(calls) == 1
+    assert calls[0].data["entity_id"] == group
 
 
 async def test_coordinator_tick_does_nothing_while_the_switch_is_off(
@@ -303,6 +223,70 @@ async def test_foreign_state_change_marks_a_member_manual_and_skips_it(
         await _tick(hass, entry)
 
     assert calls == []
+
+
+async def test_metadata_only_report_does_not_mark_member_manual(
+    enable_custom_integrations, hass, hass_config_dir, freezer
+) -> None:
+    await _setup(hass, hass_config_dir, [_target_subentry()])
+    async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    freezer.tick(datetime.timedelta(seconds=60))
+    hass.states.async_set(
+        KITCHEN_LIGHT,
+        "on",
+        {
+            "supported_color_modes": ["color_temp"],
+            "brightness": 128,
+            "friendly_name": "Kitchen light",
+        },
+        context=Context(),
+    )
+    await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [("color_temp_kelvin", 3200), ("effect", "rainbow")],
+)
+async def test_color_and_effect_reports_mark_member_manual_after_grace(
+    enable_custom_integrations,
+    hass,
+    hass_config_dir,
+    freezer,
+    attribute,
+    value,
+) -> None:
+    await _setup(hass, hass_config_dir, [_target_subentry()])
+    async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    freezer.tick(datetime.timedelta(seconds=60))
+    hass.states.async_set(
+        KITCHEN_LIGHT,
+        "on",
+        {"supported_color_modes": ["color_temp"], "brightness": 128, attribute: value},
+        context=Context(),
+    )
+    await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is True
+
+
+async def test_off_light_attribute_report_does_not_mark_member_manual(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    await _setup_with_light_off(hass, hass_config_dir)
+    _set_light(hass, state="off", context=Context(), brightness=255)
+    await hass.async_block_till_done()
+
+    target = _switch_entity(hass)._target
+    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
 
 
 async def test_members_are_observed_even_while_the_switch_is_off(
@@ -599,99 +583,6 @@ async def test_manual_flags_survive_an_entry_reload(
         )
         is True
     )
-
-
-async def test_separate_turn_on_commands_split_brightness_from_colour(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    entry = await _setup(
-        hass,
-        hass_config_dir,
-        [
-            _target_subentry(
-                separate_turn_on_commands=True, send_split_delay=0.05
-            )
-        ],
-    )
-    calls = async_mock_service(hass, "light", "turn_on")
-
-    with patch(
-        "custom_components.daylight.switch.compute_turn_on_kwargs",
-        return_value=dict(_STUB_KWARGS),
-    ):
-        # Inside the patch: resuming adapts too, and would otherwise split a
-        # real command and sleep for the real delay.
-        await _turn_switch_on(hass)
-        calls.clear()
-        started = time.monotonic()
-        await _tick(hass, entry)
-        elapsed = time.monotonic() - started
-
-    assert [call.data for call in calls] == [
-        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 62, "transition": 4.0},
-        {"entity_id": KITCHEN_LIGHT, "color_temp_kelvin": 3200, "transition": 4.0},
-    ]
-    assert elapsed >= 0.05
-
-
-async def test_separate_turn_on_commands_send_one_call_without_colour(
-    enable_custom_integrations, hass, hass_config_dir
-) -> None:
-    """A light with no colour support yields no second call, and no delay."""
-    entry = await _setup(
-        hass,
-        hass_config_dir,
-        [_target_subentry(separate_turn_on_commands=True, send_split_delay=5.0)],
-    )
-    calls = async_mock_service(hass, "light", "turn_on")
-
-    with patch(
-        "custom_components.daylight.switch.compute_turn_on_kwargs",
-        return_value={"brightness_pct": 62, "transition": 4.0},
-    ):
-        # Inside the patch: resuming adapts too, and a real two-part command
-        # would sleep for the full 5s split delay.
-        await _turn_switch_on(hass)
-        calls.clear()
-        await _tick(hass, entry)
-
-    assert [call.data for call in calls] == [
-        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 62, "transition": 4.0},
-    ]
-
-
-async def test_the_suppression_window_covers_the_split_send_delay(
-    enable_custom_integrations, hass, hass_config_dir, freezer
-) -> None:
-    """Fix: the second split part reports back `send_split_delay` late.
-
-    A single-kwarg stub keeps `_async_send` from actually sleeping, but the
-    suppression window must be sized for the worst case regardless -- with a
-    5s delay and target.py's 2s grace, a 4s transition reports at +9s, well
-    past the +6s window the transition alone would have bought.
-    """
-    entry = await _setup(
-        hass,
-        hass_config_dir,
-        [_target_subentry(separate_turn_on_commands=True, send_split_delay=5.0)],
-    )
-    calls = async_mock_service(hass, "light", "turn_on")
-
-    with patch(
-        "custom_components.daylight.switch.compute_turn_on_kwargs",
-        return_value={"brightness_pct": 62, "transition": 4.0},
-    ):
-        await _turn_switch_on(hass)
-        calls.clear()
-        await _tick(hass, entry)
-        assert len(calls) == 1
-
-        freezer.tick(datetime.timedelta(seconds=9))
-        _set_light(hass, context=Context(), brightness=255)
-        await hass.async_block_till_done()
-
-    target = _switch_entity(hass)._target
-    assert target.is_manual(KITCHEN_LIGHT, now=dt_util.utcnow().timestamp()) is False
 
 
 def _set_light_unavailable(hass, entity_id=KITCHEN_LIGHT):
