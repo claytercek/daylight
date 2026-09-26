@@ -1,0 +1,20 @@
+# Adaptive Lighting lessons for Daylight
+
+Primary sources: [Adaptive Lighting's repository](https://github.com/basnijholt/adaptive-lighting), tests, documentation, and first-hand reports. Issue reports establish symptoms, not necessarily causes. Compared with Daylight on 2026-09-25. Daylight treats each configured group entity as one light.
+
+## Tests now covered
+
+| Upstream lesson | Daylight coverage |
+| --- | --- |
+| An unchanged physical report must not extend manual-control timeout. Adaptive Lighting has a [regression test](https://github.com/basnijholt/adaptive-lighting/blob/main/tests/test_switch.py#L1371-L1410); a Zigbee2MQTT user reported false manual events after color temperatures rounded to the same mired value ([discussion](https://github.com/basnijholt/adaptive-lighting/discussions/506)). | [`test_no_op_report_does_not_extend_manual_reset`](../tests/test_switch_upstream.py) checks a changed brightness followed by a repeated value with fresh context. |
+| An automation that turns a light on with scene values should not mark it manual. Adaptive Lighting's [issue #1378](https://github.com/basnijholt/adaptive-lighting/issues/1378) prompted a [regression test](https://github.com/basnijholt/adaptive-lighting/blob/main/tests/test_switch.py#L5115-L5181). | [`test_group_turn_on_with_scene_values_adapts_as_one_light`](../tests/test_switch_upstream.py) checks the configured group is adapted once and a separate member remains off. |
+| A pending split command must not act on a light that becomes unavailable or turns off. Adaptive Lighting tests the [physical-off/availability sequence](https://github.com/basnijholt/adaptive-lighting/blob/main/tests/test_switch.py#L6107-L6162). | [`test_unavailable_light_cancels_pending_split_color_command`](../tests/test_switch_upstream.py) plus existing [split-command tests](../tests/test_switch_split.py) cover availability, switch-off, unload, and manual cancellation. |
+| An unresponsive bulb may fail to take a command or report the wrong state. Adaptive Lighting lists both in its [troubleshooting guide](https://github.com/basnijholt/adaptive-lighting/blob/main/README.md). | [`tests/test_switch_dispatch.py`](../tests/test_switch_dispatch.py) injects synchronous dispatch errors, verifies suppression rollback on first-call failure, retained suppression after a successful first split command, and isolation of another light. [`test_state_change_only_does_not_retry_when_bulb_gives_no_feedback`](../tests/test_switch_upstream.py) preserves the chosen one-attempt semantics. |
+
+## Remaining uncertainty
+
+Adaptive Lighting offers `adapt_delay` for lights that appear on before they accept brightness or color; its [options](https://github.com/basnijholt/adaptive-lighting/blob/main/README.md) and a [Zigbee2MQTT report](https://github.com/basnijholt/adaptive-lighting/discussions/506) describe that timing problem. Daylight has no delayed adaptation policy. Its regular mode tries again on the next tick if the light still reports on, as [`test_no_feedback_bulb_is_retried_and_sibling_still_adapts`](../tests/test_switch_dispatch.py) verifies; `adapt_only_on_state_change` intentionally makes one attempt. A device that accepts the Home Assistant service call but ignores the command, or whose handler fails later, is different from the synchronous dispatch errors now tested.
+
+Daylight already tests own and parent contexts, user-context precedence, transition grace, late foreign reports, unavailable reconnects, and a single group target in [`test_target.py`](../tests/test_target.py), [`test_switch.py`](../tests/test_switch.py), and [`test_switch_split.py`](../tests/test_switch_split.py). Avoid duplicating those tests or copying Adaptive Lighting's service interception, member expansion, and per-attribute manual-control model.
+
+These tests simulate Home Assistant events and services. They do not prove device-level behavior for MQTT, Matter/Thread, or ZHA; representative hardware or recorded traces would be needed for that.
