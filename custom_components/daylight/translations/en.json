@@ -116,8 +116,8 @@
                 "transition": "Transition duration, in seconds, sent with each light command.",
                 "adapt_only_on_state_change": "Only adapt when a light changes state, instead of on every update.",
                 "manual_control_reset_minutes": "Minutes of no manual changes before adaptation resumes automatically.",
-                "separate_turn_on_commands": "Send a separate command to turn a light on before adapting it.",
-                "send_split_delay": "Delay, in seconds, between the turn-on command and the adaptation command."
+                "separate_turn_on_commands": "Send brightness and color temperature in separate commands.",
+                "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."
               }
             }
           }
