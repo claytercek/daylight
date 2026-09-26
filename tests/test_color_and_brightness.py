@@ -6,6 +6,7 @@ and a frozen dataclass.
 """
 
 from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 
 import astral
 import pytest
@@ -39,7 +40,9 @@ def _sun_events(observer: astral.Observer) -> SunEvents:
     )
 
 
-def _curve_settings(brightness_mode: str) -> CurveSettings:
+def _curve_settings(
+    brightness_mode: Literal["default", "linear", "tanh"],
+) -> CurveSettings:
     return CurveSettings(
         name="test",
         astral_observer=_NYC_OBSERVER,

@@ -9,6 +9,7 @@ by re-deriving the formulas coordinator.py wraps.
 """
 
 import datetime
+from dataclasses import replace
 
 import astral
 import pytest
@@ -22,10 +23,10 @@ UTC = datetime.UTC
 _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)
 
 
-def _curve_settings(**overrides: object) -> CurveSettings:
-    defaults: dict[str, object] = dict(
+def _curve_settings(astral_observer: astral.Observer = _NYC_OBSERVER) -> CurveSettings:
+    return CurveSettings(
         name="test",
-        astral_observer=_NYC_OBSERVER,
+        astral_observer=astral_observer,
         sunrise_time=None,
         min_sunrise_time=None,
         max_sunrise_time=None,
@@ -35,13 +36,12 @@ def _curve_settings(**overrides: object) -> CurveSettings:
         brightness_mode_time_dark=datetime.timedelta(minutes=45),
         brightness_mode_time_light=datetime.timedelta(minutes=45),
     )
-    defaults.update(overrides)
-    return CurveSettings(**defaults)
 
 
 def test_day_state_equality_ignores_utc_now() -> None:
     """Two states differing only in `utc_now` compare equal."""
-    kwargs = dict(
+    a = DayState(
+        utc_now=datetime.datetime(2026, 6, 21, 12, 0, tzinfo=UTC),
         sun_position=0.5,
         brightness_factor=1.0,
         color_factor=0.5,
@@ -49,14 +49,14 @@ def test_day_state_equality_ignores_utc_now() -> None:
         next_sunrise=datetime.datetime(2026, 6, 22, 9, 24, tzinfo=UTC),
         next_sunset=datetime.datetime(2026, 6, 21, 0, 31, tzinfo=UTC),
     )
-    a = DayState(utc_now=datetime.datetime(2026, 6, 21, 12, 0, tzinfo=UTC), **kwargs)
-    b = DayState(utc_now=datetime.datetime(2026, 6, 21, 12, 1, tzinfo=UTC), **kwargs)
+    b = replace(a, utc_now=datetime.datetime(2026, 6, 21, 12, 1, tzinfo=UTC))
     assert a == b
 
 
 def test_day_state_inequality_on_other_field() -> None:
     """States differing in a field other than `utc_now` are not equal."""
-    kwargs = dict(
+    a = DayState(
+        sun_position=0.5,
         utc_now=datetime.datetime(2026, 6, 21, 12, 0, tzinfo=UTC),
         brightness_factor=1.0,
         color_factor=0.5,
@@ -64,8 +64,7 @@ def test_day_state_inequality_on_other_field() -> None:
         next_sunrise=datetime.datetime(2026, 6, 22, 9, 24, tzinfo=UTC),
         next_sunset=datetime.datetime(2026, 6, 21, 0, 31, tzinfo=UTC),
     )
-    a = DayState(sun_position=0.5, **kwargs)
-    b = DayState(sun_position=0.6, **kwargs)
+    b = replace(a, sun_position=0.6)
     assert a != b
 
 

@@ -211,6 +211,7 @@ async def test_sample_curve_nested_payload_matches_flat_computation(
         elevation=hass.config.elevation,
     )
     timezone = await dt_util.async_get_time_zone(hass.config.time_zone)
+    assert timezone is not None
     curve_settings = CurveSettings(
         name="preview",
         astral_observer=astral_observer,

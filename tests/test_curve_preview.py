@@ -14,7 +14,11 @@ import astral
 
 from custom_components.daylight.adaptation import compute_turn_on_kwargs
 from custom_components.daylight.color_and_brightness import CurveSettings
-from custom_components.daylight.curve_preview import CurvePoint, sample_curve
+from custom_components.daylight.curve_preview import (
+    DEFAULT_NUM_POINTS,
+    CurvePoint,
+    sample_curve,
+)
 
 # NYC, matching test_color_and_brightness.py's ground-truth observer.
 _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)
@@ -22,8 +26,8 @@ _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=
 _START = datetime.datetime(2026, 6, 21, 0, 0, tzinfo=UTC)
 
 
-def _curve_settings(**overrides: object) -> CurveSettings:
-    defaults: dict[str, object] = dict(
+def _curve_settings() -> CurveSettings:
+    return CurveSettings(
         name="test",
         astral_observer=_NYC_OBSERVER,
         sunrise_time=None,
@@ -35,21 +39,18 @@ def _curve_settings(**overrides: object) -> CurveSettings:
         brightness_mode_time_dark=datetime.timedelta(minutes=45),
         brightness_mode_time_light=datetime.timedelta(minutes=45),
     )
-    defaults.update(overrides)
-    return CurveSettings(**defaults)
 
 
-def _sample(**overrides: object) -> list[CurvePoint]:
-    defaults: dict[str, object] = dict(
+def _sample(num_points: int = DEFAULT_NUM_POINTS) -> list[CurvePoint]:
+    return sample_curve(
         curve_settings=_curve_settings(),
         start=_START,
         min_brightness_pct=1,
         max_brightness_pct=100,
         min_color_temp_kelvin=2000,
         max_color_temp_kelvin=5500,
+        num_points=num_points,
     )
-    defaults.update(overrides)
-    return sample_curve(**defaults)
 
 
 def test_default_num_points_is_96() -> None:

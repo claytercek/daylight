@@ -20,17 +20,18 @@ from custom_components.daylight.config_flow import (
 from custom_components.daylight.const import DOMAIN
 
 # The section-shaped dict a real target form submission produces...
+_TARGET_ADVANCED = {
+    "transition": 30.0,
+    "adapt_only_on_state_change": True,
+    "manual_control_reset_minutes": 15,
+    "separate_turn_on_commands": False,
+    "send_split_delay": 0.5,
+}
 _TARGET_INPUT = {
     "entities": ["light.kitchen", "light.den"],
     "brightness": {"min_brightness_pct": 10, "max_brightness_pct": 100},
     "color_temp": {"min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6500},
-    "advanced": {
-        "transition": 30.0,
-        "adapt_only_on_state_change": True,
-        "manual_control_reset_minutes": 15,
-        "separate_turn_on_commands": False,
-        "send_split_delay": 0.5,
-    },
+    "advanced": _TARGET_ADVANCED,
 }
 # ...and the flat dict it is stored as, which `switch.py` reads directly.
 _TARGET_DATA = {
@@ -245,7 +246,7 @@ async def test_target_add_step_applies_manual_control_reset_default(
     )
     advanced_without_reset_minutes = {
         key: value
-        for key, value in _TARGET_INPUT["advanced"].items()
+        for key, value in _TARGET_ADVANCED.items()
         if key != "manual_control_reset_minutes"
     }
     input_without_reset_minutes = {
@@ -413,7 +414,7 @@ async def test_target_reconfigure_replaces_subentry_data(
     )
     new_input = {
         **_TARGET_INPUT,
-        "advanced": {**_TARGET_INPUT["advanced"], "transition": 5.0},
+        "advanced": {**_TARGET_ADVANCED, "transition": 5.0},
     }
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=new_input

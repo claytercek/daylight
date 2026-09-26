@@ -27,8 +27,8 @@ UTC = datetime.UTC
 _NYC_OBSERVER = astral.Observer(latitude=40.7128, longitude=-74.0060, elevation=10)
 
 
-def _curve_settings(**overrides: object) -> CurveSettings:
-    defaults: dict[str, object] = dict(
+def _curve_settings() -> CurveSettings:
+    return CurveSettings(
         name="test",
         astral_observer=_NYC_OBSERVER,
         sunrise_time=None,
@@ -40,8 +40,6 @@ def _curve_settings(**overrides: object) -> CurveSettings:
         brightness_mode_time_dark=datetime.timedelta(minutes=45),
         brightness_mode_time_light=datetime.timedelta(minutes=45),
     )
-    defaults.update(overrides)
-    return CurveSettings(**defaults)
 
 
 def _day_state(sun_position: float) -> DayState:
