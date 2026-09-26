@@ -28,7 +28,7 @@ _TARGET_ADVANCED = {
     "send_split_delay": 0.5,
 }
 _TARGET_INPUT = {
-    "entities": ["light.kitchen", "light.den"],
+    "targets": {"entity_id": ["light.kitchen", "light.den"]},
     "brightness": {"min_brightness_pct": 10, "max_brightness_pct": 100},
     "color_temp": {"min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6500},
     "advanced": _TARGET_ADVANCED,
@@ -36,6 +36,7 @@ _TARGET_INPUT = {
 # ...and the flat dict it is stored as, which `switch.py` reads directly.
 _TARGET_DATA = {
     "entities": ["light.kitchen", "light.den"],
+    "areas": [],
     "min_brightness_pct": 10,
     "max_brightness_pct": 100,
     "min_color_temp_kelvin": 2000,
@@ -338,6 +339,53 @@ async def test_target_add_step_submit_creates_subentry(
     assert subentries[0].data == _TARGET_DATA
 
 
+async def test_target_add_step_accepts_an_area_without_entities(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"],
+        user_input={**_TARGET_INPUT, "targets": {"area_id": ["kitchen"]}},
+    )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    subentry = next(iter(entry.subentries.values()))
+    assert subentry.data["areas"] == ["kitchen"]
+    assert subentry.data["entities"] == []
+    assert subentry.title == "kitchen"
+
+
+@pytest.mark.parametrize(
+    ("targets", "error"),
+    [
+        ({}, "target_required"),
+        ({"device_id": ["device-1"]}, "unsupported_target"),
+        ({"entity_id": ["sensor.temperature"]}, "unsupported_target"),
+    ],
+)
+async def test_target_add_step_rejects_unsupported_or_empty_target(
+    enable_custom_integrations, hass, hass_config_dir, targets, error
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(domain=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"), context={"source": "user"}
+    )
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input={**_TARGET_INPUT, "targets": targets}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": error}
+    assert entry.subentries == {}
+
+
 async def test_target_add_step_rejects_inverted_brightness_range(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
@@ -478,7 +526,7 @@ async def test_target_reconfigure_form_shows_the_stored_values(
 
     assert result["type"] is FlowResultType.FORM
     assert _suggested_values(result["data_schema"]) == {
-        "entities": ["light.kitchen", "light.den"],
+        "targets": {"entity_id": ["light.kitchen", "light.den"], "area_id": []},
         "brightness": {"min_brightness_pct": 7, "max_brightness_pct": 83},
         "color_temp": {
             "min_color_temp_kelvin": 2222,
@@ -491,6 +539,35 @@ async def test_target_reconfigure_form_shows_the_stored_values(
             "separate_turn_on_commands": False,
             "send_split_delay": 0.25,
         },
+    }
+
+
+async def test_target_reconfigure_combines_stored_areas_and_entities_in_one_picker(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    hass.config.config_dir = hass_config_dir
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={},
+        subentries_data=[
+            {
+                "data": {**_TARGET_DATA, "areas": ["bedroom"]},
+                "subentry_type": "target",
+                "title": "Bedroom",
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+    subentry_id = next(iter(entry.subentries))
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+
+    assert _suggested_values(result["data_schema"])["targets"] == {
+        "entity_id": ["light.kitchen", "light.den"],
+        "area_id": ["bedroom"],
     }
 
 
@@ -520,7 +597,7 @@ async def test_target_reconfigure_retitles_the_subentry_from_its_entities(
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
-        user_input={**_TARGET_INPUT, "entities": ["light.porch"]},
+        user_input={**_TARGET_INPUT, "targets": {"entity_id": ["light.porch"]}},
     )
 
     assert result["type"] is FlowResultType.ABORT

@@ -12,13 +12,16 @@ from homeassistant.config_entries import (
     SubentryFlowResult,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import area_registry
 
 from .config import (
+    CONF_AREAS,
     CONF_ENTITIES,
     CONF_MAX_BRIGHTNESS_PCT,
     CONF_MAX_COLOR_TEMP_KELVIN,
     CONF_MIN_BRIGHTNESS_PCT,
     CONF_MIN_COLOR_TEMP_KELVIN,
+    CONF_TARGETS,
     HUB_SCHEMA,
     SECTION_BRIGHTNESS,
     SECTION_COLOR_TEMP,
@@ -80,9 +83,12 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Reconfigure an existing target subentry."""
-        self.options = nest_sections(
-            TARGET_SCHEMA, self._get_reconfigure_subentry().data
-        )
+        stored = self._get_reconfigure_subentry().data
+        self.options = nest_sections(TARGET_SCHEMA, stored)
+        self.options[CONF_TARGETS] = {
+            "entity_id": stored.get(CONF_ENTITIES, []),
+            "area_id": stored.get(CONF_AREAS, []),
+        }
         return await self.async_step_init()
 
     async def async_step_init(
@@ -94,6 +100,14 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
         if user_input is not None:
             brightness = user_input[SECTION_BRIGHTNESS]
             color_temp = user_input[SECTION_COLOR_TEMP]
+            targets = user_input[CONF_TARGETS]
+            if targets.get("device_id") or any(
+                not entity_id.startswith("light.")
+                for entity_id in targets.get("entity_id", [])
+            ):
+                errors["base"] = "unsupported_target"
+            elif not targets.get("entity_id") and not targets.get("area_id"):
+                errors["base"] = "target_required"
             if (
                 brightness[CONF_MIN_BRIGHTNESS_PCT]
                 > brightness[CONF_MAX_BRIGHTNESS_PCT]
@@ -107,15 +121,25 @@ class TargetSubentryFlowHandler(ConfigSubentryFlow):
 
             if not errors:
                 data = flatten_sections(TARGET_SCHEMA, user_input)
+                data.pop(CONF_TARGETS)
+                data[CONF_ENTITIES] = targets.get("entity_id", [])
+                data[CONF_AREAS] = targets.get("area_id", [])
+                registry = area_registry.async_get(self.hass)
+                title = ", ".join(
+                    [
+                        area.name
+                        if (area := registry.async_get_area(area_id))
+                        else area_id
+                        for area_id in data[CONF_AREAS]
+                    ]
+                    + data[CONF_ENTITIES]
+                )
                 if self._is_new:
-                    return self.async_create_entry(
-                        title=", ".join(user_input[CONF_ENTITIES]),
-                        data=data,
-                    )
+                    return self.async_create_entry(title=title, data=data)
                 return self.async_update_and_abort(
                     self._get_entry(),
                     self._get_reconfigure_subentry(),
-                    title=", ".join(user_input[CONF_ENTITIES]),
+                    title=title,
                     data=data,
                 )
 

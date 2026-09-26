@@ -62,7 +62,9 @@
       "entry_type": "Target",
       "error": {
         "brightness_range_invalid": "Minimum brightness must not exceed maximum brightness.",
-        "color_temp_range_invalid": "Minimum color temperature must not exceed maximum color temperature."
+        "color_temp_range_invalid": "Minimum color temperature must not exceed maximum color temperature.",
+        "target_required": "Select at least one area or light entity.",
+        "unsupported_target": "Only areas and light entities are supported."
       },
       "abort": {
         "reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"
@@ -75,10 +77,10 @@
         "init": {
           "description": "[Open the live curve preview](/daylight-preview) to see how these settings shape brightness and color temperature over 24 hours. Opening it closes this form, so note your values first.",
           "data": {
-            "entities": "Entities"
+            "targets": "Areas or lights"
           },
           "data_description": {
-            "entities": "Light entities this target adapts."
+            "targets": "Select areas and/or individual lights. Each light is adapted independently; devices are not supported."
           },
           "sections": {
             "brightness": {

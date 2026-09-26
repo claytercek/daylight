@@ -17,6 +17,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import Context, Event, HomeAssistant, State, callback
+from homeassistant.helpers import area_registry, device_registry, entity_registry
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
     EventStateChangedData,
@@ -71,6 +72,7 @@ class TargetSettings:
     """A target subentry's config, unpacked from its raw `data` dict."""
 
     entities: tuple[str, ...]
+    areas: tuple[str, ...]
     min_brightness_pct: int
     max_brightness_pct: int
     min_color_temp_kelvin: int
@@ -84,7 +86,8 @@ class TargetSettings:
     def from_subentry_data(cls, data) -> TargetSettings:
         """Build settings from a target subentry's `data` mapping."""
         return cls(
-            entities=tuple(data["entities"]),
+            entities=tuple(data.get("entities", ())),
+            areas=tuple(data.get("areas", ())),
             min_brightness_pct=data["min_brightness_pct"],
             max_brightness_pct=data["max_brightness_pct"],
             min_color_temp_kelvin=data["min_color_temp_kelvin"],
@@ -140,6 +143,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._attr_name = f"{subentry.title} adapt"
         self._attr_is_on = False
         self._send_tasks: dict[str, asyncio.Task[None]] = {}
+        self._members: tuple[str, ...] = ()
+        self._unsubscribe_members = None
 
     @property
     def extra_restore_state_data(self) -> TargetStoredData:
@@ -160,12 +165,63 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         if last_extra is not None:
             self._target = Target.from_dict(self._target.config, last_extra.as_dict())
 
-        self.async_on_remove(
-            async_track_state_change_event(
-                self.hass, self._settings.entities, self._async_member_state_changed
-            )
-        )
+        self._refresh_members(adapt_new=False)
+        if self._settings.areas:
+            for event_type in (
+                entity_registry.EVENT_ENTITY_REGISTRY_UPDATED,
+                device_registry.EVENT_DEVICE_REGISTRY_UPDATED,
+                area_registry.EVENT_AREA_REGISTRY_UPDATED,
+            ):
+                self.async_on_remove(
+                    self.hass.bus.async_listen(event_type, self._registry_changed)
+                )
+        self.async_on_remove(self._remove_member_listener)
         self.async_on_remove(self._cancel_pending_sends)
+
+    @callback
+    def _remove_member_listener(self) -> None:
+        if self._unsubscribe_members is not None:
+            self._unsubscribe_members()
+            self._unsubscribe_members = None
+
+    @callback
+    def _registry_changed(self, event: Event) -> None:
+        self._refresh_members()
+
+    @callback
+    def _refresh_members(self, *, adapt_new: bool = True) -> None:
+        """Resolve areas to light entities and rebind state tracking on changes."""
+        area_members = ()
+        if self._settings.areas:
+            registry = entity_registry.async_get(self.hass)
+            areas = set(self._settings.areas)
+            area_members = sorted(
+                entry.entity_id
+                for entry in registry.entities.values()
+                if entry.domain == "light"
+                and entry.disabled_by is None
+                and entity_registry.async_get_effective_area_id(self.hass, entry)
+                in areas
+            )
+        resolved = tuple(dict.fromkeys((*self._settings.entities, *area_members)))
+        if resolved == self._members:
+            return
+        previous = set(self._members)
+        members = set(resolved)
+        self._remove_member_listener()
+        for removed in previous - members:
+            self._cancel_send(removed)
+        self._members = resolved
+        if resolved:
+            self._unsubscribe_members = async_track_state_change_event(
+                self.hass, resolved, self._async_member_state_changed
+            )
+        if adapt_new and self.is_on and members - previous:
+            now = dt_util.utcnow()
+            day_state = self.coordinator.compute_day_state(now)
+            for entity_id in members - previous:
+                if not self._target.is_manual(entity_id, now=now.timestamp()):
+                    self._async_adapt(entity_id, day_state)
 
     @callback
     def _async_member_state_changed(
@@ -179,11 +235,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         Without the availability skip, a bare reconnect flags manual on its
         `on->unavailable` leg, and `unavailable->on` cannot clear that flag.
 
-        There is deliberately no service-call target resolution anywhere in
-        this module: detection is purely `state_changed`-based (never
-        `EVENT_CALL_SERVICE`), and a target's configured `entities` only ever
-        holds literal entity ids -- no `area_id`/`device_id`/`label_id`
-        targeting exists in this design, so there is nothing to resolve.
+        Detection is purely `state_changed`-based (never service-call-based).
+        Area selections are resolved to member entity ids before subscribing.
         """
         entity_id = event.data["entity_id"]
         old_state = event.data["old_state"]
@@ -266,7 +319,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             # Freshly computed, never `coordinator.data`: the last poll can be
             # most of an interval old by the time adaptation is resumed.
             day_state = self.coordinator.compute_day_state(now)
-            for entity_id in self._settings.entities:
+            for entity_id in self._members:
                 self._async_adapt(entity_id, day_state)
         self.async_write_ha_state()
 
@@ -301,7 +354,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         if day_state is None:
             return
         now = dt_util.utcnow().timestamp()
-        for entity_id in self._settings.entities:
+        for entity_id in self._members:
             if self._target.is_manual(entity_id, now=now):
                 continue
             self._async_adapt(entity_id, day_state)
@@ -410,6 +463,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             self.is_on is True
             and state is not None
             and state.state == STATE_ON
+            and entity_id in self._members
             and not self._target.is_manual(
                 entity_id, now=dt_util.utcnow().timestamp()
             )

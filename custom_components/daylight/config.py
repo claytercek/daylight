@@ -11,13 +11,13 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers.selector import (
-    EntitySelector,
-    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
     SelectSelector,
     SelectSelectorConfig,
+    TargetSelector,
+    TargetSelectorConfig,
     TimeSelector,
 )
 from homeassistant.util import dt as dt_util
@@ -187,6 +187,8 @@ def normalize_hub_input(user_input: dict[str, Any]) -> dict[str, Any]:
 
 # Target subentry schema keys.
 CONF_ENTITIES = "entities"
+CONF_AREAS = "areas"
+CONF_TARGETS = "targets"
 CONF_MIN_BRIGHTNESS_PCT = "min_brightness_pct"
 CONF_MAX_BRIGHTNESS_PCT = "max_brightness_pct"
 CONF_MIN_COLOR_TEMP_KELVIN = "min_color_temp_kelvin"
@@ -246,8 +248,8 @@ RANGE_FIELDS = {
 
 TARGET_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_ENTITIES): EntitySelector(
-            EntitySelectorConfig(domain="light", multiple=True)
+        vol.Required(CONF_TARGETS): TargetSelector(
+            TargetSelectorConfig(entity={"domain": "light"})
         ),
         **RANGE_FIELDS,
         vol.Optional(SECTION_ADVANCED, default=dict): section(

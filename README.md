@@ -2,16 +2,18 @@
 
 Daylight is a custom Home Assistant integration that adjusts your lights' brightness and color temperature through the day, using your location's sunrise and sunset.
 
-A **hub** defines the shared daily curve. Each **target** selects one or more light entities and sets their brightness and temperature ranges. You can give a bedroom and a kitchen different limits while keeping them on the same schedule.
+A **hub** defines the shared daily curve. Each **target** selects areas, individual light entities, or both, and sets their brightness and temperature ranges. You can give a bedroom and a kitchen different limits while keeping them on the same schedule.
 
 ## Setup
 
 1. Copy `custom_components/daylight` into your Home Assistant configuration's `custom_components` directory, then restart Home Assistant.
 2. Go to **Settings → Devices & services → Add integration → Daylight** and configure the hub. Check Home Assistant's location and time zone first: Daylight uses both.
-3. Add a target to the integration, select your lights, and set their brightness and color temperature limits.
+3. Add a target to the integration, select areas or lights in the single target picker, and set their brightness and color temperature limits.
 4. Enable the target's adaptation switch. New switches start off.
 
-Daylight adapts lights that are already on. Turning on an adaptation switch won't turn on individual lights that are off. A configured light group is treated as one light: commands go to the group, so its integration may turn on members that were off. Avoid configuring a group and its members as overlapping targets.
+Daylight adapts lights that are already on. Turning on an adaptation switch won't turn on individual lights that are off. An area resolves to its registered light entities (including those assigned through a device); each light receives its own command and has its own manual-control and failure handling. Area membership changes take effect without reconfiguring the target. Lights explicitly selected as well as included in an area are adapted only once.
+
+A light group selected directly or included in an area is treated as one light: commands go to the group, so its integration may turn on members that were off. Avoid overlapping group and member targets, or assigning the group and its members to the same area.
 
 ## Settings
 
