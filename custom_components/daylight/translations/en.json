@@ -23,46 +23,25 @@
           }
         }
       },
-      "menu": {
+      "reconfigure": {
         "title": "Daily schedule",
-        "description": "{summary}\n\nChanges remain a draft until you review and save. Cancel to discard. Light levels and selection are edited on each target. [View the saved schedule](/daylight-preview). Opening the preview leaves this form; save or cancel first.",
-        "menu_options": {"morning": "Morning timing", "evening": "Evening timing", "lengths": "Transition lengths", "advanced": "Advanced settings", "restore": "Restore standard timing", "save": "Review and save"}
-      },
-      "advanced": {"title": "Advanced settings", "description": "Optional controls for individual transition endpoints, curve shapes and update frequency.", "menu_options": {"customize": "Customize individual endpoints", "shapes": "Transition shapes", "runtime": "Update frequency", "menu": "Back to schedule"}},
-      "morning": {"title": "Morning timing", "description": "Move brightness and color together. Their relative timing stays the same.", "data": {"mode": "Morning follows"}},
-      "evening": {"title": "Evening timing", "description": "Move brightness and color together. Their relative timing stays the same.", "data": {"mode": "Evening follows"}},
-      "anchor": {"title": "Set timing", "description": "{meaning}", "data": {"offset_minutes": "Earlier / later (minutes)", "time": "Local time", "next_day": "Following day"}},
-      "lengths": {
-        "title": "Transition lengths",
-        "description": "Shorter ← 1 is standard → Longer. Morning and evening lengths stay linked for each track. Durations grow in summer and shrink in winter; they shorten further when needed to fit.\n\nToday’s draft:\n{summary}",
-        "data": {"brightness_length": "Brightness transitions", "color_length": "Color transitions"}
-      },
-      "customize": {
-        "title": "Custom timing",
-        "description": "Each track has four endpoints. Custom rules are exact and checked across seasons before saving; they are not automatically moved to fit. Unchanged endpoints keep their standard rules. Choose Standard to remove an override. Basic timing controls are hidden while endpoint overrides exist.\n\n{summary}",
-        "data": {"endpoint": "Endpoint"}
-      },
-      "endpoint_kind": {
-        "title": "Timing rule",
-        "description": "Editing {point}. The current rule is selected. Choose Standard to remove an override, or choose how this endpoint should follow the sun or clock.",
-        "data": {"kind": "Timing rule"}
-      },
-      "endpoint": {
-        "title": "Endpoint timing",
-        "description": "Editing {point}. {meaning} Negative offsets are before the event. This edits the draft only.",
-        "data": {"reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}
-      },
-      "shapes": {
-        "title": "Transition shapes",
-        "description": "Smooth gently starts and finishes. Linear changes at a constant rate. Shapes never change endpoint timing.",
-        "data": {"brightness_morning": "Morning brightness", "brightness_evening": "Evening brightness", "color_morning": "Morning color", "color_evening": "Evening color"}
-      },
-      "runtime": {"title": "Update frequency", "description": "How often Daylight recalculates. This does not change the curve or the bulb’s fade duration.", "data": {"update_interval_seconds": "Update interval (seconds)"}},
-      "restore": {"title": "Restore standard timing", "description": "Replaces all custom endpoint rules and basic timing adjustments with seasonal defaults. Target ranges and transition shapes are kept. Nothing changes on your lights until you save.", "data": {"confirm": "Replace custom timing"}},
-      "save": {
-        "title": "Save schedule",
-        "description": "{summary}\n\n{detail}\n\nSaving checks a full year of seasonal timing and applies this schedule. Actual light updates follow the configured update interval and bulb fade behavior.",
-        "data": {"action": "Action"}
+        "description": "Edit timing and curves here, then submit to save. Cancel to discard changes. Set a fixed local time only when choosing clock timing; offset and solar reference apply to sun-based timing. Individual endpoint rules override standard timing. [View the saved schedule](/daylight-preview) after saving. {detail}",
+        "sections": {
+          "morning": {"name": "Morning timing", "data": {"mode": "Morning follows", "offset_minutes": "Solar offset (minutes)", "time": "Local time"}},
+          "evening": {"name": "Evening timing", "data": {"mode": "Evening follows", "offset_minutes": "Solar offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "lengths": {"name": "Transition lengths", "data": {"brightness_length": "Brightness transitions", "color_length": "Color transitions"}},
+          "shapes": {"name": "Transition shapes", "data": {"brightness_morning": "Morning brightness", "brightness_evening": "Evening brightness", "color_morning": "Morning color", "color_evening": "Evening color"}},
+          "runtime": {"name": "Update frequency", "data": {"update_interval_seconds": "Update interval (seconds)"}},
+          "brightness_morning_start": {"name": "Brightness: morning start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "brightness_morning_end": {"name": "Brightness: morning finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "brightness_evening_start": {"name": "Brightness: evening start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "brightness_evening_end": {"name": "Brightness: evening finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "color_morning_start": {"name": "Color: morning start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "color_morning_end": {"name": "Color: morning finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "color_evening_start": {"name": "Color: evening start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "color_evening_end": {"name": "Color: evening finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
+          "restore": {"name": "Restore standard timing", "data": {"confirm": "Replace custom timing"}}
+        }
       }
     }
   },
@@ -99,8 +78,6 @@
     "shape": {"options": {"smooth": "Smooth", "linear": "Linear"}},
     "timing_mode": {"options": {"solar": "The sun", "clock": "A fixed time"}},
     "solar_reference": {"options": {"sunrise": "Sunrise", "sunset": "Sunset", "noon": "Solar noon", "midnight": "Solar midnight"}},
-    "endpoint_kind": {"options": {"standard": "Standard seasonal timing", "seasonal": "Solar offset that stretches with the season", "solar": "Solar offset in fixed minutes", "clock": "Fixed clock time"}},
-    "endpoint": {"options": {"brightness_morning_start": "Brightness: morning start", "brightness_morning_end": "Brightness: morning finish", "brightness_evening_start": "Brightness: evening start", "brightness_evening_end": "Brightness: evening finish", "color_morning_start": "Color: morning start", "color_morning_end": "Color: morning finish", "color_evening_start": "Color: evening start", "color_evening_end": "Color: evening finish"}},
-    "save_action": {"options": {"save": "Save schedule", "keep_editing": "Keep editing"}}
+    "endpoint_kind": {"options": {"standard": "Standard seasonal timing", "seasonal": "Solar offset that stretches with the season", "solar": "Solar offset in fixed minutes", "clock": "Fixed clock time"}}
   }
 }

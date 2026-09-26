@@ -34,24 +34,24 @@ Basic settings let you:
 
 - Move morning or evening earlier/later relative to the sun, shifting both tracks together.
 - **Start mornings at** a fixed time, or **finish evenings by** a fixed time. Select **Following day** explicitly for an evening ending after midnight.
-- Make brightness or color transitions shorter/longer. Each control adjusts that track's morning and evening lengths together. The form shows today's resolved times; the lengths continue to vary seasonally.
+- Make brightness or color transitions shorter/longer. Each control adjusts that track's morning and evening lengths together; the lengths continue to vary seasonally.
 
 Basic schedules automatically shorten transitions when necessary to fit the available time. They never silently swap morning and evening.
 
-Changes remain a draft until **Review and save → Save schedule**. Cancel discards them. Saving checks a full year of seasonal timing and reports an example date if rules conflict. Target level forms save independently when submitted.
+Open the collapsed sections on the hub's Reconfigure form to edit timing, shapes, or update frequency. **Submit** saves all changes together; cancel discards them. Saving checks a full year of seasonal timing and reports an example date if rules conflict. Target level forms save independently when submitted.
 
 ### Advanced timing
 
-Under **Advanced settings**, each track has exactly four editable endpoints: morning start/finish and evening start/finish. There are no additional points or curve handles.
+Each track has four collapsed endpoint sections on the same form: morning start/finish and evening start/finish. There are no additional points or curve handles.
 
-Choose an endpoint, then its timing rule:
+Open an endpoint section and select its timing rule:
 
 - **Standard:** keep its automatically fitted timing, or remove an existing override.
-- **Seasonal solar offset:** enter the offset in minutes for the date shown in the form. It stretches with daylight in other seasons.
+- **Seasonal solar offset:** enter an offset in minutes for the current date. It stretches with daylight in other seasons.
 - **Fixed-minute solar offset:** stay the same number of minutes before/after sunrise, sunset, solar noon or solar midnight.
 - **Clock time:** use an exact local time, optionally on the following day.
 
-Custom rules are exact: overlapping transitions or conflicting order are rejected, not moved to fit. Unchanged endpoints keep their standard rules. Basic timing controls are hidden while endpoint overrides exist; **Restore standard timing** explicitly replaces those overrides and timing adjustments without changing target ranges or transition shapes.
+Custom rules are exact: overlapping transitions or conflicting order are rejected, not moved to fit. Unchanged endpoints keep their standard rules. While any endpoint override exists, basic timing adjustments remain saved but do not affect the curve. **Restore standard timing** replaces overrides and basic timing adjustments without changing target ranges or transition shapes when you submit the form.
 
 Each transition can be **Smooth** (smoothstep, gently starting and finishing) or **Linear**. Changing shape does not change timing. Shape-only edits leave basic timing controls available.
 

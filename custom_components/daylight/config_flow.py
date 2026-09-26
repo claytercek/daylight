@@ -1,4 +1,4 @@
-"""Native settings: useful setup defaults and an explicitly saved timing draft."""
+"""Native settings for shared schedule and per-target lights."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import asdict
 from datetime import timedelta
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -33,17 +32,7 @@ from .config import (
 )
 from .const import DOMAIN
 from .schedule import ENDPOINTS, BasicTiming, ScheduleError
-from .schedule_config import (
-    LENGTH_SCHEMA,
-    MODE_SCHEMA,
-    RUNTIME_SCHEMA,
-    SHAPE_SCHEMA,
-    anchor_schema,
-    async_schedule,
-    choices,
-    default_hub_data,
-    endpoint_schema,
-)
+from .schedule_config import SCHEDULE_SCHEMA, async_schedule, default_hub_data
 
 HUB_TITLE = "Daylight"
 
@@ -81,7 +70,7 @@ def _target_input(
 
 
 class DaylightConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Setup selects lights. Reconfiguration edits a draft, never live settings."""
+    """Set up lights and save the shared schedule in a single edit form."""
 
     VERSION = 2
 
@@ -120,313 +109,127 @@ class DaylightConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> dict[str, type[ConfigSubentryFlow]]:
         return {"target": TargetSubentryFlowHandler}
 
+    def _schedule_values(self, data: dict[str, Any]) -> dict[str, Any]:
+        basic = data["schedule"]["basic"]
+        values: dict[str, Any] = {
+            period: {
+                "mode": "clock" if basic[f"{period}_time"] else "solar",
+                "offset_minutes": basic[f"{period}_offset_minutes"],
+                **(
+                    {"time": basic[f"{period}_time"]} if basic[f"{period}_time"] else {}
+                ),
+                **(
+                    {"next_day": basic["evening_next_day"]}
+                    if period == "evening"
+                    else {}
+                ),
+            }
+            for period in ("morning", "evening")
+        }
+        values["lengths"] = {
+            key: basic[key] for key in ("brightness_length", "color_length")
+        }
+        values["shapes"] = data["schedule"]["shapes"]
+        values["runtime"] = {"update_interval_seconds": data["update_interval_seconds"]}
+        for point in ENDPOINTS:
+            rule = data["schedule"]["endpoints"].get(point, {})
+            offset = rule.get("offset_minutes", 0)
+            if rule.get("kind") == "seasonal":
+                day = self._edit_day + timedelta(days=int(rule.get("next_day", False)))
+                offset *= self._sun.day(day).daylight / (12 * 3600)
+            values[point] = {
+                "kind": rule.get("kind", "standard"),
+                "reference": rule.get(
+                    "reference", "sunset" if "evening" in point else "sunrise"
+                ),
+                "offset_minutes": round(offset, 1),
+                **({"time": rule["clock"]} if rule.get("clock") else {}),
+                "next_day": rule.get("next_day", False),
+            }
+        values["restore"] = {"confirm": False}
+        return values
+
+    def _apply_schedule(self, data: dict[str, Any], values: dict[str, Any]) -> None:
+        stored = data["schedule"]
+        if values.get("restore", {}).get("confirm"):
+            stored["basic"] = asdict(BasicTiming())
+            stored["endpoints"] = {}
+        else:
+            basic = stored["basic"]
+            for period in ("morning", "evening"):
+                if timing := values.get(period):
+                    mode = timing["mode"]
+                    if mode == "clock" and not timing.get("time"):
+                        raise ValueError(f"Set a local time for {period} timing.")
+                    basic[f"{period}_time"] = (
+                        timing.get("time") if mode == "clock" else None
+                    )
+                    basic[f"{period}_offset_minutes"] = (
+                        timing["offset_minutes"] if mode == "solar" else 0
+                    )
+                    if period == "evening":
+                        basic["evening_next_day"] = (
+                            timing.get("next_day", False) if mode == "clock" else False
+                        )
+            basic.update(values.get("lengths", {}))
+            for point in ENDPOINTS:
+                if not (input_rule := values.get(point)):
+                    continue
+                kind = input_rule["kind"]
+                if kind == "standard":
+                    stored["endpoints"].pop(point, None)
+                    continue
+                rule = {"kind": kind, "next_day": input_rule["next_day"]}
+                if kind == "clock":
+                    if not input_rule.get("time"):
+                        raise ValueError(
+                            f"Set a local time for {point.replace('_', ' ')}."
+                        )
+                    rule["clock"] = input_rule["time"]
+                else:
+                    offset = input_rule["offset_minutes"]
+                    if kind == "seasonal":
+                        day = self._edit_day + timedelta(days=int(rule["next_day"]))
+                        offset *= 12 * 3600 / self._sun.day(day).daylight
+                    rule.update(
+                        reference=input_rule["reference"], offset_minutes=offset
+                    )
+                stored["endpoints"][point] = rule
+        if "shapes" in values:
+            stored["shapes"] = values["shapes"]
+        if "runtime" in values:
+            data.update(values["runtime"])
+
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        self.draft = deepcopy(dict(self._get_reconfigure_entry().data))
-        self._period = "morning"
-        self._mode = "solar"
-        self._point = ENDPOINTS[0]
-        self._kind = "seasonal"
-        schedule = await async_schedule(self.hass, self.draft)
+        entry = self._get_reconfigure_entry()
+        saved = deepcopy(dict(entry.data))
+        schedule = await async_schedule(self.hass, saved)
+        self._sun = schedule.sun
         self._edit_day = dt_util.utcnow().astimezone(schedule.sun.timezone).date()
-        return await self.async_step_menu()
-
-    async def _summary(self) -> str:
-        schedule = await async_schedule(self.hass, self.draft)
-        try:
-            resolved = schedule.resolve(self._edit_day)
-        except ValueError as err:
-            return str(err)
-        status = "Custom schedule" if schedule.is_custom else "Seasonal timing"
-        lines = [f"{self._edit_day.isoformat()} · {status}"]
-        for name in ("brightness", "color"):
-            track = getattr(resolved, name)
-            values = []
-            for point in (
-                "morning_start",
-                "morning_end",
-                "evening_start",
-                "evening_end",
-            ):
-                local = dt_util.utc_from_timestamp(getattr(track, point)).astimezone(
-                    schedule.sun.timezone
-                )
-                suffix = " (+1 day)" if local.date() > self._edit_day else ""
-                values.append(local.strftime("%H:%M") + suffix)
-            lines.append(
-                f"{name.title()}: {values[0]} to {values[1]}, "
-                f"{values[2]} to {values[3]}"
-            )
-        if resolved.compressed:
-            lines.append("Standard transitions shortened to fit the available time.")
-        if resolved.fallback:
-            lines.append(
-                "Polar fallback lighting anchors are in use; "
-                "these are not real sunrise/sunset events."
-            )
-        return "\n\n".join(lines)
-
-    async def async_step_menu(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        options = (
-            []
-            if self.draft["schedule"]["endpoints"]
-            else ["morning", "evening", "lengths"]
-        )
-        options.append("advanced")
-        if self.draft["schedule"]["endpoints"]:
-            options.append("restore")
-        options.append("save")
-        return self.async_show_menu(
-            step_id="menu",
-            menu_options=options,
-            description_placeholders={"summary": await self._summary()},
-        )
-
-    async def async_step_advanced(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        return self.async_show_menu(
-            step_id="advanced",
-            menu_options=["customize", "shapes", "runtime", "menu"],
-        )
-
-    async def async_step_morning(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        self._period = "morning"
-        return await self._timing_mode(user_input)
-
-    async def async_step_evening(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        self._period = "evening"
-        return await self._timing_mode(user_input)
-
-    async def _timing_mode(self, user_input: dict[str, Any] | None) -> ConfigFlowResult:
-        if user_input is not None:
-            self._mode = user_input["mode"]
-            return await self.async_step_anchor()
-        mode = (
-            "clock"
-            if self.draft["schedule"]["basic"][f"{self._period}_time"]
-            else "solar"
-        )
-        return self.async_show_form(
-            step_id=self._period,
-            data_schema=self.add_suggested_values_to_schema(
-                MODE_SCHEMA, {"mode": mode}
-            ),
-        )
-
-    async def async_step_anchor(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        basic = self.draft["schedule"]["basic"]
-        period = self._period
-        if user_input is not None:
-            basic[f"{period}_time"] = user_input.get("time")
-            basic[f"{period}_offset_minutes"] = user_input.get("offset_minutes", 0)
-            if period == "evening":
-                basic["evening_next_day"] = user_input.get("next_day", False)
-            return await self.async_step_menu()
-        return self.async_show_form(
-            step_id="anchor",
-            description_placeholders={
-                "meaning": (
-                    "Shift both tracks relative to sunrise/sunset. "
-                    "Negative minutes are earlier."
-                    if self._mode == "solar"
-                    else "Start morning brightening at this time."
-                    if period == "morning"
-                    else "Both tracks finish reaching their night levels by this time."
-                )
-            },
-            data_schema=self.add_suggested_values_to_schema(
-                anchor_schema(period, self._mode),
-                {
-                    "time": basic[f"{period}_time"],
-                    "offset_minutes": basic[f"{period}_offset_minutes"],
-                    "next_day": basic["evening_next_day"],
-                },
-            ),
-        )
-
-    async def async_step_lengths(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            self.draft["schedule"]["basic"].update(user_input)
-            return await self.async_step_menu()
-        return self.async_show_form(
-            step_id="lengths",
-            description_placeholders={"summary": await self._summary()},
-            data_schema=self.add_suggested_values_to_schema(
-                LENGTH_SCHEMA, self.draft["schedule"]["basic"]
-            ),
-        )
-
-    async def async_step_customize(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            self._point = user_input["endpoint"]
-            return await self.async_step_endpoint_kind()
-        return self.async_show_form(
-            step_id="customize",
-            description_placeholders={"summary": await self._summary()},
-            data_schema=vol.Schema(
-                {
-                    vol.Required("endpoint"): choices(list(ENDPOINTS), "endpoint"),
-                }
-            ),
-        )
-
-    async def async_step_endpoint_kind(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            self._kind = user_input["kind"]
-            if self._kind == "standard":
-                self.draft["schedule"]["endpoints"].pop(self._point, None)
-                return await self.async_step_menu()
-            return await self.async_step_endpoint()
-        stored = self.draft["schedule"]["endpoints"].get(self._point, {})
-        return self.async_show_form(
-            step_id="endpoint_kind",
-            description_placeholders={"point": self._point.replace("_", " ")},
-            data_schema=self.add_suggested_values_to_schema(
-                vol.Schema(
-                    {
-                        vol.Required("kind", default="seasonal"): choices(
-                            ["standard", "seasonal", "solar", "clock"],
-                            "endpoint_kind",
-                        ),
-                    }
-                ),
-                {"kind": stored.get("kind", "standard")},
-            ),
-        )
-
-    async def async_step_endpoint(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        schedule = await async_schedule(self.hass, self.draft)
-        stored = self.draft["schedule"]["endpoints"].get(self._point, {})
-        if user_input is not None:
-            rule = {"kind": self._kind, "next_day": user_input.get("next_day", False)}
-            if self._kind == "clock":
-                rule["clock"] = user_input["time"]
-            else:
-                offset = user_input["offset_minutes"]
-                if self._kind == "seasonal":
-                    day = self._edit_day + timedelta(days=int(rule["next_day"]))
-                    offset *= 12 * 3600 / schedule.sun.day(day).daylight
-                rule.update(reference=user_input["reference"], offset_minutes=offset)
-            self.draft["schedule"]["endpoints"][self._point] = rule
-            return await self.async_step_menu()
-        offset = stored.get("offset_minutes", 0)
-        if stored.get("kind") == "seasonal":
-            day = self._edit_day + timedelta(days=int(stored.get("next_day", False)))
-            offset *= schedule.sun.day(day).daylight / (12 * 3600)
-        return self.async_show_form(
-            step_id="endpoint",
-            description_placeholders={
-                "point": self._point.replace("_", " "),
-                "meaning": (
-                    f"Offset on {self._edit_day.isoformat()}; "
-                    "scales with daylight in other seasons."
-                    if self._kind == "seasonal"
-                    else "The offset stays the same number of minutes year-round."
-                    if self._kind == "solar"
-                    else "Exact local clock time."
-                ),
-            },
-            data_schema=self.add_suggested_values_to_schema(
-                endpoint_schema(self._kind),
-                {
-                    "reference": stored.get(
-                        "reference", "sunset" if "evening" in self._point else "sunrise"
-                    ),
-                    "offset_minutes": round(offset, 1),
-                    "time": stored.get("clock"),
-                    "next_day": stored.get("next_day", False),
-                },
-            ),
-        )
-
-    async def async_step_shapes(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            self.draft["schedule"]["shapes"] = user_input
-            return await self.async_step_menu()
-        return self.async_show_form(
-            step_id="shapes",
-            data_schema=self.add_suggested_values_to_schema(
-                SHAPE_SCHEMA, self.draft["schedule"]["shapes"]
-            ),
-        )
-
-    async def async_step_runtime(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            self.draft.update(user_input)
-            return await self.async_step_menu()
-        return self.async_show_form(
-            step_id="runtime",
-            data_schema=self.add_suggested_values_to_schema(RUNTIME_SCHEMA, self.draft),
-        )
-
-    async def async_step_restore(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None:
-            if user_input["confirm"]:
-                self.draft["schedule"]["basic"] = asdict(BasicTiming())
-                self.draft["schedule"]["endpoints"] = {}
-            return await self.async_step_menu()
-        return self.async_show_form(
-            step_id="restore",
-            data_schema=vol.Schema({vol.Required("confirm", default=False): bool}),
-        )
-
-    async def async_step_save(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        if user_input is not None and user_input.get("action") == "keep_editing":
-            return await self.async_step_menu()
+        values = self._schedule_values(saved)
         errors = {}
         detail = ""
         if user_input is not None:
-            schedule = await async_schedule(self.hass, self.draft)
+            values.update(user_input)
             try:
+                validated = SCHEDULE_SCHEMA(user_input)
+                draft = deepcopy(saved)
+                self._apply_schedule(draft, validated)
+                schedule = await async_schedule(self.hass, draft)
                 await self.hass.async_add_executor_job(
                     schedule.validate, self._edit_day
                 )
             except (ScheduleError, ValueError) as err:
                 errors["base"], detail = "schedule_invalid", str(err)
             else:
-                return self.async_update_and_abort(
-                    self._get_reconfigure_entry(), data=deepcopy(self.draft)
-                )
+                return self.async_update_and_abort(entry, data=draft)
         return self.async_show_form(
-            step_id="save",
+            step_id="reconfigure",
             errors=errors,
-            description_placeholders={
-                "summary": await self._summary(),
-                "detail": detail,
-            },
-            data_schema=vol.Schema(
-                {
-                    vol.Required("action", default="save"): choices(
-                        ["save", "keep_editing"], "save_action"
-                    )
-                }
-            ),
+            description_placeholders={"detail": detail},
+            data_schema=self.add_suggested_values_to_schema(SCHEDULE_SCHEMA, values),
         )
 
 

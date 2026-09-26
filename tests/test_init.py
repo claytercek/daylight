@@ -147,21 +147,12 @@ async def test_saved_native_draft_reloads_the_live_schedule(
         DOMAIN,
         context={"source": "reconfigure", "entry_id": entry.entry_id},
     )
-    for values in (
-        {"next_step_id": "morning"},
-        {"mode": "clock"},
-        {"time": "07:30:00"},
-        {"next_step_id": "save"},
-    ):
-        result = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            user_input=values,
-        )
+    assert result["step_id"] == "reconfigure"
     assert entry.runtime_data is previous
     assert previous.schedule.basic.morning_time == datetime.time(6, 30)
     await hass.config_entries.flow.async_configure(
         result["flow_id"],
-        user_input={"action": "save"},
+        user_input={"morning": {"mode": "clock", "time": "07:30:00"}},
     )
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED

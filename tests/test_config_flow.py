@@ -1,4 +1,4 @@
-"""Drive native HA setup/reconfiguration: defaults, drafts, rules and saving."""
+"""Drive native setup and reconfiguration for schedule and target settings."""
 
 from copy import deepcopy
 from unittest.mock import patch
@@ -16,6 +16,7 @@ from custom_components.daylight.config_flow import (
     TargetSubentryFlowHandler,
 )
 from custom_components.daylight.const import DOMAIN
+from custom_components.daylight.schedule import ENDPOINTS
 from custom_components.daylight.schedule_config import default_hub_data
 
 TARGET_INPUT = {
@@ -66,16 +67,33 @@ async def configure(hass, result, **user_input):
     )
 
 
-async def menu(hass, entry):
+async def edit_schedule(hass, entry):
     return await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "reconfigure", "entry_id": entry.entry_id}
     )
 
 
-async def choose(hass, result, step):
-    if step in {"customize", "shapes", "runtime"} and result["step_id"] == "menu":
-        result = await configure(hass, result, next_step_id="advanced")
-    return await configure(hass, result, next_step_id=step)
+def initial_values(schema):
+    """Match the frontend's suggested-value, default, then section initialization."""
+    values = {}
+    for field in to_field_list(schema, custom_serializer=custom_serializer):
+        if "suggested_value" in field.get("description", {}):
+            values[field["name"]] = field["description"]["suggested_value"]
+        elif "default" in field:
+            values[field["name"]] = field["default"]
+        elif field.get("type") == "expandable":
+            values[field["name"]] = initial_fields(field["schema"])
+    return values
+
+
+def initial_fields(fields):
+    values = {}
+    for field in fields:
+        if "suggested_value" in field.get("description", {}):
+            values[field["name"]] = field["description"]["suggested_value"]
+        elif "default" in field:
+            values[field["name"]] = field["default"]
+    return values
 
 
 async def test_setup_select_lights_and_accept_defaults(hass, entry):
@@ -102,105 +120,141 @@ async def test_setup_requires_a_target(hass, entry):
     assert result["errors"] == {"base": "target_required"}
 
 
-async def test_basic_edits_are_drafts_until_explicit_save(hass, entry):
+async def test_schedule_edits_all_sections_on_one_form(hass, entry):
     original = deepcopy(dict(entry.data))
-    result = await menu(hass, entry)
-    assert result["type"] is FlowResultType.MENU
-    assert set(result["menu_options"]) == {
+    result = await edit_schedule(hass, entry)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+    fields = to_field_list(result["data_schema"], custom_serializer=custom_serializer)
+    assert {field["name"] for field in fields} == {
         "morning",
         "evening",
         "lengths",
-        "advanced",
-        "save",
+        "shapes",
+        "runtime",
+        "restore",
+        *ENDPOINTS,
     }
-    result = await choose(hass, result, "morning")
-    result = await configure(hass, result, mode="solar")
-    result = await configure(hass, result, offset_minutes=30)
+    assert all(
+        field["type"] == "expandable" and not field["expanded"] for field in fields
+    )
+    assert all("default" not in field for field in fields)
+    values = initial_values(result["data_schema"])
+    assert values["morning"]["mode"] == "solar"
+    assert values["lengths"]["brightness_length"] == 1
+    values["morning"]["offset_minutes"] = 30
+    values["lengths"].update(brightness_length=1.5, color_length=0.5)
+    values["shapes"]["color_evening"] = "linear"
+    values["runtime"]["update_interval_seconds"] = 60
     assert entry.data == original
-    result = await choose(hass, result, "lengths")
-    result = await configure(hass, result, brightness_length=1.5, color_length=0.5)
-    assert entry.data == original
-    result = await choose(hass, result, "save")
-    assert entry.data == original  # opening review does not save
-    result = await configure(hass, result, action="save")
+    result = await configure(hass, result, **values)
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     basic = entry.data["schedule"]["basic"]
     assert basic["morning_offset_minutes"] == 30
     assert basic["brightness_length"] == 1.5
     assert basic["color_length"] == 0.5
+    assert entry.data["schedule"]["shapes"]["color_evening"] == "linear"
+    assert entry.data["update_interval_seconds"] == 60
     assert next(iter(entry.subentries.values())).data == TARGET_DATA
 
 
-async def test_cancel_discards_draft(hass, entry):
+async def test_cancel_discards_schedule_edits(hass, entry):
     original = deepcopy(dict(entry.data))
-    result = await choose(hass, await menu(hass, entry), "lengths")
-    result = await configure(hass, result, brightness_length=2, color_length=2)
+    result = await edit_schedule(hass, entry)
     hass.config_entries.flow.async_abort(result["flow_id"])
     assert entry.data == original
 
 
 async def test_clock_mode_and_next_day_round_trip(hass, entry):
-    result = await choose(hass, await menu(hass, entry), "morning")
-    result = await configure(hass, result, mode="clock")
-    result = await configure(hass, result, time="07:00:00")
-    result = await choose(hass, result, "evening")
-    result = await configure(hass, result, mode="clock")
-    result = await configure(hass, result, time="01:00:00", next_day=True)
-    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    values["morning"].update(mode="clock", time="07:00:00")
+    values["evening"].update(mode="clock", time="01:00:00", next_day=True)
+    result = await configure(hass, result, **values)
     assert result["type"] is FlowResultType.ABORT
     assert entry.data["schedule"]["basic"]["evening_next_day"] is True
-    result = await choose(hass, await menu(hass, entry), "evening")
-    assert suggested(result["data_schema"])["mode"] == "clock"
-    result = await configure(hass, result, mode="clock")
-    assert suggested(result["data_schema"])["time"] == "01:00:00"
+    reopened = await edit_schedule(hass, entry)
+    prefills = initial_values(reopened["data_schema"])
+    assert prefills["evening"]["mode"] == "clock"
+    assert prefills["evening"]["time"] == "01:00:00"
+    assert prefills["evening"]["next_day"] is True
 
 
-async def test_invalid_schedule_keeps_saved_data_and_allows_correction(hass, entry):
+async def test_invalid_schedule_preserves_input_and_saved_data(hass, entry):
     original = deepcopy(dict(entry.data))
-    result = await choose(hass, await menu(hass, entry), "morning")
-    result = await configure(hass, result, mode="clock")
-    result = await configure(hass, result, time="23:00:00")
-    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    values["morning"].update(mode="clock", time="23:00:00")
+    values["lengths"]["brightness_length"] = 2
+    result = await configure(hass, result, **values)
+    assert result["step_id"] == "reconfigure"
     assert result["errors"] == {"base": "schedule_invalid"}
     assert (
         "evening occurs before morning" in result["description_placeholders"]["detail"]
     )
+    assert initial_values(result["data_schema"])["lengths"]["brightness_length"] == 2
     assert entry.data == original
-    result = await configure(hass, result, action="keep_editing")
-    result = await choose(hass, result, "morning")
-    result = await configure(hass, result, mode="solar")
-    result = await configure(hass, result, offset_minutes=0)
-    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    values["morning"]["mode"] = "solar"
+    values["morning"].pop("time")
+    result = await configure(hass, result, **values)
     assert result["type"] is FlowResultType.ABORT
 
 
-async def test_custom_endpoint_hides_basic_controls_without_destroying_them(
-    hass, entry
-):
-    result = await choose(hass, await menu(hass, entry), "customize")
-    result = await configure(hass, result, endpoint="color_morning_end")
-    assert suggested(result["data_schema"])["kind"] == "standard"
-    result = await configure(hass, result, kind="seasonal")
-    result = await configure(
-        hass, result, reference="sunrise", offset_minutes=120, next_day=False
+async def test_clock_requires_local_time_without_losing_other_changes(hass, entry):
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    values["evening"]["mode"] = "clock"
+    values["lengths"]["color_length"] = 2
+    result = await configure(hass, result, **values)
+    assert result["errors"] == {"base": "schedule_invalid"}
+    assert (
+        "Set a local time for evening" in result["description_placeholders"]["detail"]
     )
-    assert "morning" not in result["menu_options"]
-    assert "restore" in result["menu_options"]
-    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    assert initial_values(result["data_schema"])["lengths"]["color_length"] == 2
+    assert entry.data == default_hub_data()
+
+
+async def test_custom_endpoint_round_trip_and_remove(hass, entry):
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    values["color_morning_end"].update(
+        kind="seasonal", reference="sunrise", offset_minutes=120
+    )
+    result = await configure(hass, result, **values)
     assert result["type"] is FlowResultType.ABORT
     rule = entry.data["schedule"]["endpoints"]["color_morning_end"]
     assert rule["kind"] == "seasonal"
-    result = await choose(hass, await menu(hass, entry), "customize")
-    result = await configure(hass, result, endpoint="color_morning_end")
-    assert suggested(result["data_schema"])["kind"] == "seasonal"
-    result = await configure(hass, result, kind="seasonal")
-    assert suggested(result["data_schema"])["offset_minutes"] == pytest.approx(
-        120, abs=0.1
+    reopened = await edit_schedule(hass, entry)
+    values = initial_values(reopened["data_schema"])
+    assert values["color_morning_end"]["kind"] == "seasonal"
+    assert values["color_morning_end"]["offset_minutes"] == pytest.approx(120, abs=0.1)
+    values["color_morning_end"]["kind"] = "standard"
+    result = await configure(hass, reopened, **values)
+    assert result["type"] is FlowResultType.ABORT
+    assert not entry.data["schedule"]["endpoints"]
+
+
+async def test_clock_endpoint_can_be_cleared_in_same_form(hass, entry):
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    values["color_morning_end"].update(kind="clock", time="10:00:00")
+    result = await configure(hass, result, **values)
+    assert result["type"] is FlowResultType.ABORT
+    assert (
+        entry.data["schedule"]["endpoints"]["color_morning_end"]["clock"] == "10:00:00"
     )
 
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    assert values["color_morning_end"]["time"] == "10:00:00"
+    values["color_morning_end"].update(kind="standard", time="")
+    result = await configure(hass, result, **values)
+    assert result["type"] is FlowResultType.ABORT
+    assert not entry.data["schedule"]["endpoints"]
 
-async def test_restore_requires_confirmation_and_save(hass, entry):
+
+async def test_restore_requires_confirmation(hass, entry):
     data = deepcopy(dict(entry.data))
     data["schedule"]["endpoints"] = {
         "color_morning_start": {
@@ -210,51 +264,23 @@ async def test_restore_requires_confirmation_and_save(hass, entry):
         }
     }
     hass.config_entries.async_update_entry(entry, data=data)
-    result = await choose(hass, await menu(hass, entry), "restore")
-    result = await configure(hass, result, confirm=False)
-    assert "morning" not in result["menu_options"]
-    result = await configure(hass, await choose(hass, result, "restore"), confirm=True)
-    assert "morning" in result["menu_options"]
+    result = await edit_schedule(hass, entry)
+    values = initial_values(result["data_schema"])
+    assert values["restore"]["confirm"] is False
     assert entry.data["schedule"]["endpoints"]
-    result = await configure(hass, await choose(hass, result, "save"), action="save")
+    values["restore"]["confirm"] = True
+    values["shapes"]["color_evening"] = "linear"
+    result = await configure(hass, result, **values)
+    assert result["type"] is FlowResultType.ABORT
     assert not entry.data["schedule"]["endpoints"]
-    assert next(iter(entry.subentries.values())).data == TARGET_DATA
-
-
-async def test_removing_last_override_restores_basic_controls(hass, entry):
-    result = await choose(hass, await menu(hass, entry), "customize")
-    result = await configure(hass, result, endpoint="color_morning_start")
-    result = await configure(hass, result, kind="solar")
-    result = await configure(
-        hass, result, reference="sunrise", offset_minutes=5, next_day=False
-    )
-    result = await choose(hass, result, "customize")
-    result = await configure(hass, result, endpoint="color_morning_start")
-    assert suggested(result["data_schema"])["kind"] == "solar"
-    result = await configure(hass, result, kind="standard")
-    assert "morning" in result["menu_options"]
-
-
-async def test_shape_only_edits_keep_basic_controls(hass, entry):
-    result = await choose(hass, await menu(hass, entry), "shapes")
-    result = await configure(
-        hass,
-        result,
-        brightness_morning="linear",
-        brightness_evening="smooth",
-        color_morning="smooth",
-        color_evening="linear",
-    )
-    assert "morning" in result["menu_options"]
-    result = await configure(hass, await choose(hass, result, "save"), action="save")
     assert entry.data["schedule"]["shapes"]["color_evening"] == "linear"
 
 
 @pytest.mark.parametrize("interval", [-1, 0, 0.5])
 async def test_nonpositive_poll_interval_is_rejected(hass, entry, interval):
-    result = await choose(hass, await menu(hass, entry), "runtime")
+    result = await edit_schedule(hass, entry)
     with pytest.raises(vol.Invalid):
-        result["data_schema"]({"update_interval_seconds": interval})
+        result["data_schema"]({"runtime": {"update_interval_seconds": interval}})
 
 
 def test_target_subentry_type():
@@ -361,22 +387,14 @@ async def test_target_reconfigure_prefills_saved_values(hass, entry):
         ("color_temp", {"min_color_temp_kelvin": 2500, "max_color_temp_kelvin": 5000}),
         ("advanced", {"transition": 4.5, "adapt_only_on_state_change": True}),
     ):
-        assert (
-            "default" not in fields[name]
-        )  # Otherwise the UI initializes the section to {}.
+        assert "default" not in fields[name]
         children = {field["name"]: field for field in fields[name]["schema"]}
         for key, value in expected.items():
             assert children[key]["description"]["suggested_value"] == value
 
-    # Submit the values the frontend initializes from the serialized schema.
     user_input = {"targets": fields["targets"]["description"]["suggested_value"]}
     for name in ("brightness", "color_temp", "advanced"):
-        user_input[name] = {
-            child["name"]: child.get("description", {}).get(
-                "suggested_value", child.get("default")
-            )
-            for child in fields[name]["schema"]
-        }
+        user_input[name] = initial_fields(fields[name]["schema"])
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"], user_input=user_input
     )

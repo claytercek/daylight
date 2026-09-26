@@ -10,6 +10,7 @@ from typing import Any
 import astral
 import voluptuous as vol
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
@@ -21,7 +22,7 @@ from homeassistant.helpers.selector import (
 )
 from homeassistant.util import dt as dt_util
 
-from .schedule import BasicTiming, Endpoint, Schedule
+from .schedule import ENDPOINTS, BasicTiming, Endpoint, Schedule
 from .solar import SunEvents
 
 
@@ -73,44 +74,58 @@ RUNTIME_SCHEMA = vol.Schema(
         ),
     }
 )
-MODE_SCHEMA = vol.Schema(
-    {
+
+
+def _timing_schema(*, evening: bool) -> vol.Schema:
+    fields: dict[Any, Any] = {
         vol.Required("mode", default="solar"): choices(
             ["solar", "clock"], "timing_mode"
         ),
+        vol.Required("offset_minutes", default=0): number(-720, 720),
+        vol.Optional("time"): vol.Any(TimeSelector(), "", None),
     }
-)
-
-
-def anchor_schema(period: str, mode: str) -> vol.Schema:
-    if mode == "solar":
-        return vol.Schema(
-            {vol.Required("offset_minutes", default=0): number(-720, 720)}
-        )
-    fields: dict[Any, Any] = {vol.Required("time"): TimeSelector()}
-    if period == "evening":
+    if evening:
         fields[vol.Required("next_day", default=False)] = BooleanSelector()
     return vol.Schema(fields)
 
 
-def endpoint_schema(kind: str) -> vol.Schema:
-    if kind == "clock":
-        return vol.Schema(
-            {
-                vol.Required("time"): TimeSelector(),
-                vol.Required("next_day", default=False): BooleanSelector(),
-            }
-        )
+def _endpoint_schema(point: str) -> vol.Schema:
     return vol.Schema(
         {
-            vol.Required("reference", default="sunrise"): choices(
-                ["sunrise", "sunset", "noon", "midnight"],
-                "solar_reference",
+            vol.Required("kind", default="standard"): choices(
+                ["standard", "seasonal", "solar", "clock"], "endpoint_kind"
             ),
+            vol.Required(
+                "reference", default="sunset" if "evening" in point else "sunrise"
+            ): choices(["sunrise", "sunset", "noon", "midnight"], "solar_reference"),
             vol.Required("offset_minutes", default=0): number(-1440, 1440, 0.1),
+            vol.Optional("time"): vol.Any(TimeSelector(), "", None),
             vol.Required("next_day", default=False): BooleanSelector(),
         }
     )
+
+
+SCHEDULE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("morning"): section(
+            _timing_schema(evening=False), {"collapsed": True}
+        ),
+        vol.Optional("evening"): section(
+            _timing_schema(evening=True), {"collapsed": True}
+        ),
+        vol.Optional("lengths"): section(LENGTH_SCHEMA, {"collapsed": True}),
+        vol.Optional("shapes"): section(SHAPE_SCHEMA, {"collapsed": True}),
+        vol.Optional("runtime"): section(RUNTIME_SCHEMA, {"collapsed": True}),
+        **{
+            vol.Optional(point): section(_endpoint_schema(point), {"collapsed": True})
+            for point in ENDPOINTS
+        },
+        vol.Optional("restore"): section(
+            vol.Schema({vol.Required("confirm", default=False): BooleanSelector()}),
+            {"collapsed": True},
+        ),
+    }
+)
 
 
 async def async_schedule(hass: HomeAssistant, data: Mapping[str, Any]) -> Schedule:
