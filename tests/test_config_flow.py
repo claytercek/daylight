@@ -6,6 +6,8 @@ from unittest.mock import patch
 import pytest
 import voluptuous as vol
 from homeassistant.data_entry_flow import FlowResultType, section
+from homeassistant.helpers.config_validation import custom_serializer
+from probatio import to_field_list
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight.config import TARGET_SCHEMA
@@ -328,6 +330,60 @@ def suggested(schema):
     }
 
 
+async def test_target_reconfigure_prefills_saved_values(hass, entry):
+    subentry_id = next(iter(entry.subentries))
+    saved = {
+        **TARGET_DATA,
+        "min_brightness_pct": 35,
+        "max_color_temp_kelvin": 5000,
+        "transition": 4.5,
+        "adapt_only_on_state_change": True,
+    }
+    hass.config_entries.async_update_subentry(
+        entry, entry.subentries[subentry_id], data=saved
+    )
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, "target"),
+        context={"source": "reconfigure", "subentry_id": subentry_id},
+    )
+    fields = {
+        field["name"]: field
+        for field in to_field_list(
+            result["data_schema"], custom_serializer=custom_serializer
+        )
+    }
+    assert fields["targets"]["description"]["suggested_value"] == {
+        "entity_id": ["light.kitchen"],
+        "area_id": [],
+    }
+    for name, expected in (
+        ("brightness", {"min_brightness_pct": 35, "max_brightness_pct": 100}),
+        ("color_temp", {"min_color_temp_kelvin": 2500, "max_color_temp_kelvin": 5000}),
+        ("advanced", {"transition": 4.5, "adapt_only_on_state_change": True}),
+    ):
+        assert (
+            "default" not in fields[name]
+        )  # Otherwise the UI initializes the section to {}.
+        children = {field["name"]: field for field in fields[name]["schema"]}
+        for key, value in expected.items():
+            assert children[key]["description"]["suggested_value"] == value
+
+    # Submit the values the frontend initializes from the serialized schema.
+    user_input = {"targets": fields["targets"]["description"]["suggested_value"]}
+    for name in ("brightness", "color_temp", "advanced"):
+        user_input[name] = {
+            child["name"]: child.get("description", {}).get(
+                "suggested_value", child.get("default")
+            )
+            for child in fields[name]["schema"]
+        }
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], user_input=user_input
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[subentry_id].data == saved
+
+
 async def test_target_reconfigure_round_trip_and_retitles(hass, entry):
     subentry_id = next(iter(entry.subentries))
     result = await hass.config_entries.subentries.async_init(
@@ -357,9 +413,12 @@ def test_target_sections_are_optional_and_collapsed():
     for key, value in TARGET_SCHEMA.schema.items():
         if isinstance(value, section):
             assert isinstance(key, vol.Optional)
+    assert "brightness" not in TARGET_SCHEMA(
+        {"targets": {"entity_id": ["light.kitchen"]}}
+    )
     assert (
-        TARGET_SCHEMA({"targets": {"entity_id": ["light.kitchen"]}})["brightness"][
-            "min_brightness_pct"
-        ]
+        TARGET_SCHEMA({"targets": {"entity_id": ["light.kitchen"]}, "brightness": {}})[
+            "brightness"
+        ]["min_brightness_pct"]
         == 10
     )

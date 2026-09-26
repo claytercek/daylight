@@ -52,7 +52,10 @@ def _target_input(
     hass: HomeAssistant, user_input: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
     """Normalize and validate the same target form in setup and subentry flows."""
-    data = flatten_sections(TARGET_SCHEMA, TARGET_SCHEMA(user_input))
+    # Supply omitted sections for validation without overriding saved form values.
+    data = flatten_sections(
+        TARGET_SCHEMA, TARGET_SCHEMA(nest_sections(TARGET_SCHEMA, {}) | user_input)
+    )
     targets = data.pop(CONF_TARGETS)
     if targets.get("device_id") or any(
         not entity.startswith("light.") for entity in targets.get("entity_id", [])

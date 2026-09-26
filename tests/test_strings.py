@@ -92,5 +92,11 @@ def test_target_errors_have_strings() -> None:
     assert "color_temp_range_invalid" in errors
 
 
+def test_target_save_message_is_renderable() -> None:
+    strings = json.loads(_STRINGS_PATH.read_text())
+    message = strings["config_subentries"]["target"]["abort"]["reconfigure_successful"]
+    assert message == "Target saved."
+
+
 def test_translations_en_matches_strings_byte_for_byte() -> None:
     assert _TRANSLATIONS_PATH.read_bytes() == _STRINGS_PATH.read_bytes()

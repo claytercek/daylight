@@ -75,7 +75,7 @@
         "target_required": "Select at least one area or light.",
         "unsupported_target": "Only areas and light entities are supported."
       },
-      "abort": {"reconfigure_successful": "[%key:common::config_flow::abort::reconfigure_successful%]"},
+      "abort": {"reconfigure_successful": "Target saved."},
       "initiate_flow": {"user": "Add target", "reconfigure": "Edit lights and levels"},
       "step": {
         "init": {

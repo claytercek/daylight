@@ -85,7 +85,7 @@ TARGET_SCHEMA = vol.Schema(
         vol.Required(CONF_TARGETS): TargetSelector(
             TargetSelectorConfig(entity={"domain": "light"})
         ),
-        vol.Optional(SECTION_BRIGHTNESS, default=dict): section(
+        vol.Optional(SECTION_BRIGHTNESS): section(
             vol.Schema(
                 {
                     vol.Optional(CONF_MIN_BRIGHTNESS_PCT, default=10): _number(
@@ -98,7 +98,7 @@ TARGET_SCHEMA = vol.Schema(
             ),
             {"collapsed": True},
         ),
-        vol.Optional(SECTION_COLOR_TEMP, default=dict): section(
+        vol.Optional(SECTION_COLOR_TEMP): section(
             vol.Schema(
                 {
                     vol.Optional(CONF_MIN_COLOR_TEMP_KELVIN, default=2500): _number(
@@ -111,7 +111,7 @@ TARGET_SCHEMA = vol.Schema(
             ),
             {"collapsed": True},
         ),
-        vol.Optional(SECTION_ADVANCED, default=dict): section(
+        vol.Optional(SECTION_ADVANCED): section(
             vol.Schema(
                 {
                     vol.Optional(CONF_TRANSITION, default=0.0): _number(),
