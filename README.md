@@ -71,11 +71,11 @@ Each target has these additional controls:
 
 | Setting | Behavior |
 | --- | --- |
-| Transition | Fade duration in seconds, subject to the light's support. |
+| Transition | Fade duration in seconds for ongoing updates, subject to the light's support. A light entering the on state, joining an active target, or a target switch resuming adaptation snaps to the current values instead. |
 | Adapt Only On State Change | Disables periodic adaptation. Lights still adapt when they enter the on state or when you resume adaptation. |
 | Manual Control Reset Minutes | Resumes after this many minutes without another detected manual change. `0` disables timed reset. Reset takes effect at the next adaptation opportunity. |
 | Separate Turn-On Commands | Sends brightness and color temperature in separate commands for bulbs that don't accept both together. |
-| Send Split Delay | Seconds between those separate commands. |
+| Send Split Delay | Seconds between those separate commands, including when adaptation resumes. |
 
 ## Preview a saved schedule
 

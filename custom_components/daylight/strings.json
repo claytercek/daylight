@@ -19,7 +19,7 @@
           "advanced": {
             "name": "Light behavior",
             "data": {"transition": "Light fade duration (seconds)", "adapt_only_on_state_change": "Only adapt on state changes", "manual_control_reset_minutes": "Resume after manual changes (minutes)", "separate_turn_on_commands": "Separate brightness and color commands", "send_split_delay": "Delay between commands (seconds)"},
-            "data_description": {"transition": "Fade requested from the bulb, separate from the daily curve. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."}
+            "data_description": {"transition": "Fade for ongoing updates, separate from the daily curve. Turning on or resuming adaptation snaps instead. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."}
           }
         }
       },
@@ -67,7 +67,7 @@
             "advanced": {
               "name": "Light behavior",
               "data": {"transition": "Light fade duration (seconds)", "adapt_only_on_state_change": "Only adapt on state changes", "manual_control_reset_minutes": "Resume after manual changes (minutes)", "separate_turn_on_commands": "Separate brightness and color commands", "send_split_delay": "Delay between commands (seconds)"},
-              "data_description": {"transition": "Fade requested from the bulb, separate from the daily curve. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."}
+              "data_description": {"transition": "Fade for ongoing updates, separate from the daily curve. Turning on or resuming adaptation snaps instead. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands."}
             }
           }
         }

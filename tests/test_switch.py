@@ -385,6 +385,29 @@ async def test_member_turning_on_while_the_switch_is_on_is_corrected(
     assert calls[0].data == {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS}
 
 
+async def test_member_turning_on_snaps_to_current_day_values(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup_with_light_off(hass, hass_config_dir)
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ):
+        _set_light(hass, state="on", context=Context(), brightness=12)
+        await hass.async_block_till_done()
+
+    assert [call.data for call in calls] == [
+        {
+            "entity_id": KITCHEN_LIGHT,
+            "brightness_pct": 70,
+            "color_temp_kelvin": 3400,
+            "transition": 0.0,
+        }
+    ]
+
+
 async def test_member_turning_on_while_the_switch_is_off_stays_manual(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
@@ -505,6 +528,32 @@ async def test_turning_the_switch_on_adapts_every_on_member_at_once(
 
     assert [call.data for call in calls] == [
         {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS},
+    ]
+
+
+async def test_switch_off_on_snaps_members_to_current_day_values(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": KITCHEN_SWITCH}, blocking=True
+    )
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ):
+        await _turn_switch_on(hass)
+
+    assert [call.data for call in calls] == [
+        {
+            "entity_id": KITCHEN_LIGHT,
+            "brightness_pct": 70,
+            "color_temp_kelvin": 3400,
+            "transition": 0.0,
+        }
     ]
 
 

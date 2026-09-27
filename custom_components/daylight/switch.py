@@ -221,7 +221,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             day_state = self.coordinator.compute_day_state(now)
             for entity_id in members - previous:
                 if not self._target.is_manual(entity_id, now=now.timestamp()):
-                    self._async_adapt(entity_id, day_state)
+                    self._async_adapt(entity_id, day_state, snap=True)
 
     @callback
     def _async_member_state_changed(
@@ -295,7 +295,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             return
         # Freshly computed, never `coordinator.data`: the last poll can be
         # most of an interval old by the time a light is switched on.
-        self._async_adapt(entity_id, self.coordinator.compute_day_state(now))
+        self._async_adapt(entity_id, self.coordinator.compute_day_state(now), snap=True)
 
     async def async_turn_on(self, **kwargs) -> None:
         """Resume adaptation for this target.
@@ -320,7 +320,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             # most of an interval old by the time adaptation is resumed.
             day_state = self.coordinator.compute_day_state(now)
             for entity_id in self._members:
-                self._async_adapt(entity_id, day_state)
+                self._async_adapt(entity_id, day_state, snap=True)
         self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs) -> None:
@@ -360,7 +360,9 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             self._async_adapt(entity_id, day_state)
 
     @callback
-    def _async_adapt(self, entity_id: str, day_state: DayState) -> None:
+    def _async_adapt(
+        self, entity_id: str, day_state: DayState, *, snap: bool = False
+    ) -> None:
         """Queue one member's adaptation command.
 
         Adapting pushes values onto a light that is already on; it never
@@ -368,6 +370,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         periodic tick and the resume pass -- either of which would otherwise
         switch off members back on -- and is a harmless no-op for the
         not-on->on correction, which has already established the member is on.
+        `snap` bypasses the fade when a light comes on, joins a target, or
+        adaptation resumes.
         """
         # Finish the current split before considering another poll. Replacing
         # it on every tick could postpone the color command indefinitely when
@@ -389,7 +393,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             max_brightness_pct=self._settings.max_brightness_pct,
             min_color_temp_kelvin=self._settings.min_color_temp_kelvin,
             max_color_temp_kelvin=self._settings.max_color_temp_kelvin,
-            transition=self._settings.transition,
+            transition=0.0 if snap else self._settings.transition,
             device_min_color_temp_kelvin=(
                 min_color_temp if isinstance(min_color_temp, int) else None
             ),
@@ -432,7 +436,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         # Record immediately before dispatch, after task scheduling. A split
         # needs a window long enough for its delayed second report; a one-part
         # command needs only its transition and reporting grace.
-        transition_seconds = self._settings.transition
+        transition_seconds = kwargs[TRANSITION_KWARG]
         if len(parts) > 1:
             transition_seconds += self._settings.send_split_delay
         previous_suppress_until = self._target.record_command(

@@ -9,6 +9,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import async_mock_service
 
 from tests.switch_support import (
+    _DAY_STATE,
     _STUB_KWARGS,
     HALL_LIGHT,
     KITCHEN_LIGHT,
@@ -125,6 +126,41 @@ async def test_area_members_follow_registry_changes_and_deduplicate_explicit_lig
     await hass.async_block_till_done()
     await _tick(hass, entry)
     assert [call.data["entity_id"] for call in calls] == [KITCHEN_LIGHT]
+
+
+async def test_new_area_member_snaps_to_current_day_values(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    kitchen = area_registry.async_get(hass).async_create("Kitchen")
+    hall = area_registry.async_get(hass).async_create("Hall")
+    _register_light(hass, KITCHEN_LIGHT, area_id=kitchen.id)
+    _register_light(hass, HALL_LIGHT, area_id=hall.id)
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(entities=[], areas=[kitchen.id])],
+        lights=(KITCHEN_LIGHT, HALL_LIGHT),
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ):
+        entity_registry.async_get(hass).async_update_entity(
+            HALL_LIGHT, area_id=kitchen.id
+        )
+        await hass.async_block_till_done()
+
+    assert [call.data for call in calls] == [
+        {
+            "entity_id": HALL_LIGHT,
+            "brightness_pct": 70,
+            "color_temp_kelvin": 3400,
+            "transition": 0.0,
+        }
+    ]
 
 
 async def test_device_area_is_inherited_by_its_light(

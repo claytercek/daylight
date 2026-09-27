@@ -55,6 +55,27 @@ async def test_separate_turn_on_commands_split_brightness_from_colour(
     assert elapsed >= 0.05
 
 
+async def test_switch_resume_splits_instant_brightness_and_colour_commands(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(separate_turn_on_commands=True)],
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ):
+        await _turn_switch_on(hass)
+
+    assert [call.data for call in calls] == [
+        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 70, "transition": 0.0},
+        {"entity_id": KITCHEN_LIGHT, "color_temp_kelvin": 3400, "transition": 0.0},
+    ]
+
+
 async def test_separate_turn_on_commands_send_one_call_without_colour(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
