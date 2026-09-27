@@ -128,6 +128,21 @@ class Target:
         state.own_context_ids.remove(context_id)
         state.suppress_until = previous_suppress_until
 
+    def is_own_context(
+        self, entity_id: str, context_id: str, parent_id: str | None = None
+    ) -> bool:
+        """Whether a report/call belongs to an adaptation command we created."""
+        state = self._entities.get(entity_id)
+        return state is not None and (
+            context_id in state.own_context_ids or parent_id in state.own_context_ids
+        )
+
+    def clear_reporting_grace(self, entity_id: str) -> None:
+        """A new external service call supersedes ambiguous command reports."""
+        state = self._entities.get(entity_id)
+        if state is not None:
+            state.suppress_until = 0.0
+
     def observe_state_change(
         self,
         entity_id: str,

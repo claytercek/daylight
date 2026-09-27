@@ -16,7 +16,14 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import STATE_OFF, STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
-from homeassistant.core import Context, Event, HomeAssistant, State, callback
+from homeassistant.core import (
+    Context,
+    Event,
+    HomeAssistant,
+    ServiceCall,
+    State,
+    callback,
+)
 from homeassistant.helpers import area_registry, device_registry, entity_registry
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import (
@@ -29,7 +36,14 @@ from homeassistant.util import dt as dt_util
 
 from .adaptation import compute_turn_on_kwargs
 from .coordinator import DayCoordinator, DayState
-from .target import Target, TargetConfig
+from .target import SUPPRESSION_GRACE_SECONDS, Target, TargetConfig
+from .turn_on import (
+    COLOR_KEYS,
+    SPECIAL_KEYS,
+    TurnOnCommand,
+    TurnOnInterceptor,
+    register,
+)
 
 TARGET_SUBENTRY_TYPE = "target"
 _LOGGER = logging.getLogger(__name__)
@@ -65,6 +79,17 @@ def _has_control_change(old_state: State, new_state: State) -> bool:
         old_state.attributes.get(key) != new_state.attributes.get(key)
         for key in CONTROL_ATTRIBUTES
     )
+
+
+@dataclasses.dataclass
+class _TurnOnReceipt:
+    """Transient caller context, never persisted or added to our own-context ring."""
+
+    context_id: str
+    # No reporting deadline until the caller's native dispatch completes.
+    expires: float | None = None
+    entered_on: asyncio.Event = dataclasses.field(default_factory=asyncio.Event)
+    expiry: asyncio.TimerHandle | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,6 +170,9 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._send_tasks: dict[str, asyncio.Task[None]] = {}
         self._members: tuple[str, ...] = ()
         self._unsubscribe_members = None
+        self._interceptor: TurnOnInterceptor | None = None
+        self._receipts: dict[str, _TurnOnReceipt] = {}
+        self._native_pending: dict[str, int] = {}
 
     @property
     def extra_restore_state_data(self) -> TargetStoredData:
@@ -176,7 +204,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                     self.hass.bus.async_listen(event_type, self._registry_changed)
                 )
         self.async_on_remove(self._remove_member_listener)
-        self.async_on_remove(self._cancel_pending_sends)
+        self.async_on_remove(self._remove_interceptor)
 
     @callback
     def _remove_member_listener(self) -> None:
@@ -212,6 +240,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         for removed in previous - members:
             self._cancel_send(removed)
         self._members = resolved
+        self._register_interceptor()
         if resolved:
             self._unsubscribe_members = async_track_state_change_event(
                 self.hass, resolved, self._async_member_state_changed
@@ -224,9 +253,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                     self._async_adapt(entity_id, day_state, snap=True)
 
     @callback
-    def _async_member_state_changed(
-        self, event: Event[EventStateChangedData]
-    ) -> None:
+    def _async_member_state_changed(self, event: Event[EventStateChangedData]) -> None:
         """Feed member control changes into the manual-control tracker.
 
         A member hand-dimmed while this switch is off stays flagged manual
@@ -235,7 +262,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         Without the availability skip, a bare reconnect flags manual on its
         `on->unavailable` leg, and `unavailable->on` cannot clear that flag.
 
-        Detection is purely `state_changed`-based (never service-call-based).
+        Manual detection remains state-change-based. Native turn-on receipts
+        distinguish the initial command's reports from a subsequent hand-dim.
         Area selections are resolved to member entity ids before subscribing.
         """
         entity_id = event.data["entity_id"]
@@ -247,7 +275,34 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             or old_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
             or new_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN)
         )
-        if not availability_change and _has_control_change(old_state, new_state):
+        receipt = self._receipts.get(entity_id)
+        received = (
+            receipt is not None
+            and (
+                receipt.expires is None
+                or event.time_fired.timestamp() <= receipt.expires
+            )
+            and new_state is not None
+            and new_state.state == STATE_ON
+            and (
+                event.context.id == receipt.context_id
+                or event.context.parent_id == receipt.context_id
+                or event.context.user_id is None
+            )
+        )
+        intercepted_edge = (
+            received
+            and not receipt.entered_on.is_set()
+            and old_state is not None
+            and old_state.state == STATE_OFF
+        )
+        if intercepted_edge and receipt is not None:
+            receipt.entered_on.set()
+        if (
+            not received
+            and not availability_change
+            and _has_control_change(old_state, new_state)
+        ):
             manual = self._target.observe_state_change(
                 entity_id,
                 event.context.id,
@@ -259,6 +314,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                 self._cancel_send(entity_id)
         if new_state is None or new_state.state != STATE_ON:
             self._cancel_send(entity_id)
+            if new_state is not None and new_state.state == STATE_OFF:
+                self._target.clear_reporting_grace(entity_id)
 
         # Deliberately not an `else`: a light reconnecting straight back to
         # `on` still needs its immediate adaptation correction below. Every
@@ -291,7 +348,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         # member is showing whatever it was last left at, which is stale.
         # Gated only on the flag as it stands after the clear above.
         now = dt_util.utcnow()
-        if self._target.is_manual(entity_id, now=now.timestamp()):
+        if intercepted_edge or self._target.is_manual(entity_id, now=now.timestamp()):
             return
         # Freshly computed, never `coordinator.data`: the last poll can be
         # most of an interval old by the time a light is switched on.
@@ -313,6 +370,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         """
         was_off = not self.is_on
         self._attr_is_on = True
+        self._register_interceptor()
         if was_off:
             self._target.clear_all_manual_flags()
             now = dt_util.utcnow()
@@ -326,12 +384,129 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
     async def async_turn_off(self, **kwargs) -> None:
         """Pause adaptation for this target."""
         self._attr_is_on = False
-        self._cancel_pending_sends()
+        self._remove_interceptor()
         self.async_write_ha_state()
+
+    @callback
+    def _register_interceptor(self) -> None:
+        if self.is_on:
+            self._interceptor = register(self.hass, self, self._members)
+
+    @callback
+    def _remove_interceptor(self) -> None:
+        if self._interceptor is not None:
+            self._interceptor.remove(self)
+            self._interceptor = None
+        self._cancel_pending_sends()
+
+    @callback
+    def _drop_receipt(self, entity_id: str) -> None:
+        receipt = self._receipts.pop(entity_id, None)
+        if receipt is not None and receipt.expiry is not None:
+            receipt.expiry.cancel()
+
+    def observe_light_call(self, entity_id: str, call: ServiceCall) -> None:
+        """A new external command ends recognition of the previous request.
+
+        In particular, automations can reuse a Context for a later hand-dim.
+        Own split/periodic commands must not invalidate their pending sequence.
+        """
+        if self._target.is_own_context(
+            entity_id, call.context.id, call.context.parent_id
+        ):
+            return
+        self._cancel_send(entity_id)
+        self._target.clear_reporting_grace(entity_id)
+
+    def prepare_turn_on(
+        self, entity_id: str, call: ServiceCall
+    ) -> TurnOnCommand | None:
+        """Replace only an ordinary, known-off member's native turn-on values."""
+        state = self.hass.states.get(entity_id)
+        if (
+            not self.is_on
+            or entity_id not in self._members
+            or state is None
+            or state.state != STATE_OFF
+        ):
+            return None
+        params = dict(call.data["params"])
+        if SPECIAL_KEYS.intersection(params) or any(
+            params.get(key) == 0 for key in ("brightness", "brightness_pct", "white")
+        ):
+            return None
+        now = dt_util.utcnow()
+        kwargs = self._adapt_kwargs(
+            state, self.coordinator.compute_day_state(now), snap=True
+        )
+        if not kwargs:
+            return None
+        if BRIGHTNESS_KWARG in kwargs:
+            params.pop(BRIGHTNESS_KWARG, None)
+            params["brightness"] = round(255 * kwargs[BRIGHTNESS_KWARG] / 100)
+        color = kwargs.get(COLOR_TEMP_KWARG)
+        if color is not None:
+            for key in COLOR_KEYS:
+                params.pop(key, None)
+            params[COLOR_TEMP_KWARG] = color
+        params[TRANSITION_KWARG] = 0.0
+        split = (
+            self._settings.separate_turn_on_commands
+            and BRIGHTNESS_KWARG in kwargs
+            and color is not None
+        )
+        if split:
+            del params[COLOR_TEMP_KWARG]
+        duration = SUPPRESSION_GRACE_SECONDS + (
+            self._settings.send_split_delay if split else 0
+        )
+        receipt = _TurnOnReceipt(call.context.id)
+        self._receipts[entity_id] = receipt
+
+        def expire() -> None:
+            if self._receipts.get(entity_id) is receipt:
+                self._cancel_send(entity_id)
+
+        self._native_pending[entity_id] = self._native_pending.get(entity_id, 0) + 1
+
+        def finish(success: bool) -> None:
+            self._native_pending[entity_id] -= 1
+            if not self._native_pending[entity_id]:
+                del self._native_pending[entity_id]
+            # The original service task belongs to HA, never to _send_tasks.
+            if self._receipts.get(entity_id) is not receipt:
+                return
+            if not success:
+                self._cancel_send(entity_id)
+                return
+            # Both the minimum split delay and bounded reporting grace start
+            # after native dispatch; slow device handlers retain their receipt.
+            receipt.expires = dt_util.utcnow().timestamp() + duration
+            receipt.expiry = self.hass.loop.call_later(duration, expire)
+            if split and color is not None:
+                task = self.hass.async_create_task(
+                    self._async_finish_turn_on(entity_id, color, receipt)
+                )
+                self._send_tasks[entity_id] = task
+                task.add_done_callback(lambda done: self._finish_send(entity_id, done))
+
+        return TurnOnCommand(params, finish)
+
+    async def _async_finish_turn_on(
+        self, entity_id: str, color: int, receipt: _TurnOnReceipt
+    ) -> None:
+        """Wait for the minimum delay and on-report; expiry cancels this task."""
+        await asyncio.sleep(self._settings.send_split_delay)
+        await receipt.entered_on.wait()
+        if self._can_send(entity_id):
+            await self._async_send(
+                entity_id, {COLOR_TEMP_KWARG: color, TRANSITION_KWARG: 0.0}, Context()
+            )
 
     @callback
     def _cancel_send(self, entity_id: str) -> None:
         """Stop a member's pending command sequence."""
+        self._drop_receipt(entity_id)
         task = self._send_tasks.pop(entity_id, None)
         if task is not None:
             task.cancel()
@@ -339,7 +514,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
     @callback
     def _cancel_pending_sends(self) -> None:
         """Stop pending commands when adaptation pauses or the entity unloads."""
-        for entity_id in tuple(self._send_tasks):
+        for entity_id in tuple(self._send_tasks.keys() | self._receipts.keys()):
             self._cancel_send(entity_id)
 
     @callback
@@ -376,14 +551,30 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         # Finish the current split before considering another poll. Replacing
         # it on every tick could postpone the color command indefinitely when
         # the poll interval is shorter than the configured split delay.
-        if entity_id in self._send_tasks:
+        if (
+            entity_id in self._send_tasks
+            or entity_id in self._receipts
+            or entity_id in self._native_pending
+        ):
             return
         state = self.hass.states.get(entity_id)
         if state is None or state.state != STATE_ON:
             return
+        kwargs = self._adapt_kwargs(state, day_state, snap=snap)
+        if not kwargs:
+            return
+        context = Context()
+        task = self.hass.async_create_task(self._async_send(entity_id, kwargs, context))
+        self._send_tasks[entity_id] = task
+        task.add_done_callback(lambda done: self._finish_send(entity_id, done))
+
+    def _adapt_kwargs(
+        self, state: State, day_state: DayState, *, snap: bool
+    ) -> dict[str, Any]:
+        """Shared calculation for already-on adaptation and native turn-ons."""
         min_color_temp = state.attributes.get("min_color_temp_kelvin")
         max_color_temp = state.attributes.get("max_color_temp_kelvin")
-        kwargs = compute_turn_on_kwargs(
+        return compute_turn_on_kwargs(
             supported_color_modes=set(
                 state.attributes.get("supported_color_modes") or []
             ),
@@ -401,12 +592,6 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                 max_color_temp if isinstance(max_color_temp, int) else None
             ),
         )
-        if not kwargs:
-            return
-        context = Context()
-        task = self.hass.async_create_task(self._async_send(entity_id, kwargs, context))
-        self._send_tasks[entity_id] = task
-        task.add_done_callback(lambda done: self._finish_send(entity_id, done))
 
     @callback
     def _finish_send(self, entity_id: str, task: asyncio.Task[None]) -> None:
@@ -468,9 +653,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             and state is not None
             and state.state == STATE_ON
             and entity_id in self._members
-            and not self._target.is_manual(
-                entity_id, now=dt_util.utcnow().timestamp()
-            )
+            and not self._target.is_manual(entity_id, now=dt_util.utcnow().timestamp())
         )
 
     async def _async_turn_on(

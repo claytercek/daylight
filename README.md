@@ -65,6 +65,12 @@ After changing Home Assistant's location or timezone, reload Daylight and review
 
 ## Light behavior
 
+With adaptation enabled, an ordinary Home Assistant `light.turn_on` (or a `light.toggle` turning an off light on) receives freshly calculated brightness and color temperature in its first device command, with transition `0`. This applies only to known-off members with adaptable capabilities. Scheduled values take precedence over explicit brightness, profiles, and scene colors on that off→on request. RGB-only lights keep the caller's color and receive scheduled brightness. Changes made while a light is already on still take manual control.
+
+Requests for zero brightness, relative brightness steps, flashes, or effects pass through unchanged. So do unmanaged lights and lights whose state is unknown or unavailable. Physical turn-ons and reconnects still use state-change correction, which can briefly show the previous values. Turning off the target's adaptation switch disables interception as well as ongoing adaptation.
+
+Home Assistant has no public pre-turn-on hook. Daylight wraps a private entity-dispatch function after authorization and target resolution, preserving the original caller context and normal light handler. It doesn't replace service registrations or expand groups itself. If the hook's signature or data shape isn't supported, Daylight logs a compatibility warning and falls back to state-change adaptation. A light assigned to multiple enabled targets also skips interception and logs a warning; remove the overlap rather than relying on either target to win.
+
 The update interval still defaults to 90 seconds. Mathematical curve shape, polling frequency and the fade requested from a bulb are separate: a smooth target curve does not guarantee continuous physical output.
 
 Each target has these additional controls:
@@ -77,6 +83,8 @@ Each target has these additional controls:
 | Separate Turn-On Commands | Sends brightness and color temperature in separate commands for bulbs that don't accept both together. |
 | Send Split Delay | Seconds between those separate commands, including when adaptation resumes. |
 
+With Separate Turn-On Commands enabled, the original turn-on carries scheduled brightness; Daylight waits at least Send Split Delay after the native turn-on completes, then sends temperature once the light reports on and is still under adaptive control. If no matching on-report arrives before the receipt expires, the temperature command is cancelled. This mode cannot guarantee the initial color: the bulb can show its previous color until the second command. Home Assistant's default light profiles can also supply a color in the first command. Disabling adaptation, removing the member, turning the light off, or taking manual control cancels the delayed command, never the caller's original turn-on.
+
 ## Preview a saved schedule
 
 Open `/daylight-preview`, choose a target and date, and use **Refresh saved settings** after making changes. The preview is read-only: it never changes settings or lights. It shows the same curve and range mapping used by live adaptation, along with transition times and explanations for automatic fitting or polar fallback.
@@ -88,6 +96,8 @@ Use the time inspection slider or the expandable values table to inspect individ
 Changing a light's brightness or color pauses adaptation for that entity. Cycle the light off and on to resume, or toggle the target's adaptation switch off and on to reset all its lights. Switch state and manual flags survive restarts.
 
 Detection uses Home Assistant state changes. Daylight recognizes its own command contexts and ignores metadata and availability changes. Reports without a user context are also ignored during its transition plus a short reporting grace period, favoring fewer false overrides.
+
+An intercepted turn-on has a separate, short-lived receipt for its caller context and child reports, including user-authored reports. It stays active while the native request executes, suppresses one duplicate off→on correction, and expires after the split delay (if any) plus two seconds from successful native completion. A failed or cancelled native request clears it immediately. The caller's context isn't saved as Daylight's own. A new external light service call clears the receipt and reporting grace, so an automation reusing the same context can still take manual control. An old manual flag clears only when the light actually reports off→on, not merely because a turn-on was requested.
 
 That tradeoff matters: a physical dim during this window can go undetected. A delayed device report after the window can look like manual control. A reconnect alone won't clear an existing manual flag.
 
