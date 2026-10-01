@@ -71,6 +71,17 @@ CONTROL_ATTRIBUTES = frozenset(
 )
 
 
+def _group_members(attributes: dict[str, Any]) -> set[str]:
+    """Return member ids exposed by standard groups and ZHA light groups."""
+    return {
+        entity_id
+        for key in ("entity_id", "group_entities")
+        if isinstance((members := attributes.get(key)), (list, tuple, set))
+        for entity_id in members
+        if isinstance(entity_id, str)
+    }
+
+
 def _has_control_change(old_state: State, new_state: State) -> bool:
     """Ignore metadata updates and attributes reported while the light is off."""
     if old_state.state != new_state.state:
@@ -169,7 +180,9 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._attr_is_on = False
         self._send_tasks: dict[str, asyncio.Task[None]] = {}
         self._members: tuple[str, ...] = ()
+        self._area_candidates: tuple[str, ...] = ()
         self._unsubscribe_members = None
+        self._unsubscribe_area_membership = None
         self._interceptor: TurnOnInterceptor | None = None
         self._receipts: dict[str, _TurnOnReceipt] = {}
         self._native_pending: dict[str, int] = {}
@@ -204,6 +217,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                     self.hass.bus.async_listen(event_type, self._registry_changed)
                 )
         self.async_on_remove(self._remove_member_listener)
+        self.async_on_remove(self._remove_area_membership_listener)
         self.async_on_remove(self._remove_interceptor)
 
     @callback
@@ -213,8 +227,25 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             self._unsubscribe_members = None
 
     @callback
+    def _remove_area_membership_listener(self) -> None:
+        if self._unsubscribe_area_membership is not None:
+            self._unsubscribe_area_membership()
+            self._unsubscribe_area_membership = None
+
+    @callback
     def _registry_changed(self, event: Event) -> None:
         self._refresh_members()
+
+    @callback
+    def _async_area_membership_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        old_state = event.data["old_state"]
+        new_state = event.data["new_state"]
+        old_members = _group_members(old_state.attributes) if old_state else set()
+        new_members = _group_members(new_state.attributes) if new_state else set()
+        if old_members != new_members:
+            self._refresh_members()
 
     @callback
     def _refresh_members(self, *, adapt_new: bool = True) -> None:
@@ -231,6 +262,29 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                 and entity_registry.async_get_effective_area_id(self.hass, entry)
                 in areas
             )
+            candidates = tuple(area_members)
+            if candidates != self._area_candidates:
+                self._remove_area_membership_listener()
+                self._area_candidates = candidates
+                if candidates:
+                    self._unsubscribe_area_membership = async_track_state_change_event(
+                        self.hass,
+                        candidates,
+                        self._async_area_membership_changed,
+                    )
+            # A group area and its member lights otherwise produce overlapping
+            # adaptation calls; keep the group only when selected explicitly.
+            area_member_ids = set(area_members)
+            area_members = [
+                entity_id
+                for entity_id in area_members
+                if not (
+                    (state := self.hass.states.get(entity_id)) is not None
+                    and area_member_ids.intersection(
+                        _group_members(state.attributes)
+                    )
+                )
+            ]
         resolved = tuple(dict.fromkeys((*self._settings.entities, *area_members)))
         if resolved == self._members:
             return
@@ -269,6 +323,12 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         entity_id = event.data["entity_id"]
         old_state = event.data["old_state"]
         new_state = event.data["new_state"]
+        old_group_members = _group_members(old_state.attributes) if old_state else set()
+        new_group_members = _group_members(new_state.attributes) if new_state else set()
+        if old_group_members != new_group_members:
+            self._refresh_members()
+            if entity_id not in self._members:
+                return
         availability_change = (
             old_state is None
             or new_state is None

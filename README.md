@@ -13,9 +13,9 @@ A **hub** defines the shared daily curve. Each **target** selects areas, individ
 
 Defaults are **10% brightness / 2500 K at night** and **100% / 4000 K during the day**. Both tracks follow the sun automatically; no timing configuration is required.
 
-Daylight adapts lights that are already on. Turning on an adaptation switch won't turn on individual lights that are off. An area resolves to its registered light entities (including those assigned through a device); each light receives its own command and has its own manual-control and failure handling. Area membership changes take effect without reconfiguring the target. Lights explicitly selected as well as included in an area are adapted only once.
+Daylight adapts lights that are already on. Turning on an adaptation switch won't turn on individual lights that are off. An area resolves to its registered light entities (including those assigned through a device); each light receives its own command and has its own manual-control and failure handling. When an area includes both a light group and its registered member lights, Daylight omits the area-discovered group to avoid sending overlapping commands. Area membership changes take effect without reconfiguring the target. Lights explicitly selected as well as included in an area are adapted only once.
 
-A light group selected directly or included in an area is treated as one light: commands go to the group, so its integration may turn on members that were off. Avoid overlapping group and member targets, or assigning the group and its members to the same area.
+A light group selected directly (as an entity) is treated as one light: commands go to the group, so its integration may turn on members that were off. Explicitly selecting a group keeps it in the target even when its members are also included by area; avoid that overlap if the group integration may turn on members that were off. An area-only group remains included when none of its members are in the selected area.
 
 ## Change the daily schedule
 
