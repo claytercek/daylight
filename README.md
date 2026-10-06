@@ -4,12 +4,25 @@ Daylight is a custom Home Assistant integration that adjusts your lights' bright
 
 A **hub** defines the shared daily curve. Each **target** selects areas, individual light entities, or both, and sets their brightness and temperature ranges. You can give a bedroom and a kitchen different limits while keeping them on the same schedule.
 
-## Setup
+## Installation and setup
 
-1. Copy `custom_components/daylight` into your Home Assistant configuration's `custom_components` directory, then restart Home Assistant.
-2. Check Home Assistant's location and time zone, then go to **Settings → Devices & services → Add integration → Daylight**.
-3. Select areas or lights. Setup creates the shared schedule and your first target; all other fields have defaults. Add more targets later if different rooms need different levels.
-4. Enable the target's adaptation switch. New switches start off.
+### HACS (recommended)
+
+Daylight is installed through HACS as a custom repository:
+
+1. Open HACS, select the three-dot menu, and choose **Custom repositories**.
+2. Add `https://github.com/claytercek/daylight` with the category **Integration**.
+3. Open Daylight in HACS, select **Download**, and restart Home Assistant when the download finishes.
+
+### Manual installation
+
+As an alternative, download or clone this repository and copy `custom_components/daylight` into your Home Assistant configuration's `custom_components` directory. Restart Home Assistant afterward.
+
+### Setup
+
+1. Check Home Assistant's location and time zone, then go to **Settings → Devices & services → Add integration → Daylight**.
+2. Select areas or lights. Setup creates the shared schedule and your first target; all other fields have defaults. Add more targets later if different rooms need different levels.
+3. Enable the target's adaptation switch. New switches start off.
 
 Defaults are **10% brightness / 2500 K at night** and **100% / 4000 K during the day**. Both tracks follow the sun automatically; no timing configuration is required.
 
