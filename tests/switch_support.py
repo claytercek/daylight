@@ -68,7 +68,11 @@ def _target_subentry(title="Kitchen", **overrides) -> ConfigSubentryData:
 
 
 async def _setup(
-    hass, hass_config_dir, subentries, lights=(KITCHEN_LIGHT,)
+    hass,
+    hass_config_dir,
+    subentries,
+    lights=(KITCHEN_LIGHT,),
+    hub_data_overrides=None,
 ) -> MockConfigEntry:
     """Set up a hub entry, with member lights already present.
 
@@ -89,7 +93,7 @@ async def _setup(
         domain=DOMAIN,
         title="Test Hub",
         version=2,
-        data=_HUB_DATA,
+        data={**_HUB_DATA, **(hub_data_overrides or {})},
         subentries_data=subentries,
     )
     entry.add_to_hass(hass)

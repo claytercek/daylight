@@ -36,6 +36,7 @@ TARGET_DATA = {
     "manual_control_reset_minutes": 0,
     "separate_turn_on_commands": False,
     "send_split_delay": 0.0,
+    "serialized_native_fades": False,
 }
 
 
@@ -364,6 +365,7 @@ async def test_target_reconfigure_prefills_saved_values(hass, entry):
         "max_color_temp_kelvin": 5000,
         "transition": 4.5,
         "adapt_only_on_state_change": True,
+        "serialized_native_fades": True,
     }
     hass.config_entries.async_update_subentry(
         entry, entry.subentries[subentry_id], data=saved
@@ -385,7 +387,14 @@ async def test_target_reconfigure_prefills_saved_values(hass, entry):
     for name, expected in (
         ("brightness", {"min_brightness_pct": 35, "max_brightness_pct": 100}),
         ("color_temp", {"min_color_temp_kelvin": 2500, "max_color_temp_kelvin": 5000}),
-        ("advanced", {"transition": 4.5, "adapt_only_on_state_change": True}),
+        (
+            "advanced",
+            {
+                "transition": 4.5,
+                "adapt_only_on_state_change": True,
+                "serialized_native_fades": True,
+            },
+        ),
     ):
         assert "default" not in fields[name]
         children = {field["name"]: field for field in fields[name]["schema"]}
@@ -416,7 +425,11 @@ async def test_target_reconfigure_round_trip_and_retitles(hass, entry):
         user_input={
             **TARGET_INPUT,
             "targets": {"entity_id": ["light.porch"]},
-            "advanced": {"transition": 5.0, "manual_control_reset_minutes": 15},
+            "advanced": {
+                "transition": 5.0,
+                "manual_control_reset_minutes": 15,
+                "serialized_native_fades": True,
+            },
         },
     )
     assert result["type"] is FlowResultType.ABORT
@@ -424,6 +437,7 @@ async def test_target_reconfigure_round_trip_and_retitles(hass, entry):
     assert target.title == "light.porch"
     assert target.data["transition"] == 5.0
     assert target.data["manual_control_reset_minutes"] == 15
+    assert target.data["serialized_native_fades"] is True
     assert entry.data == default_hub_data()
 
 

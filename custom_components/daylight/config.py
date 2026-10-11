@@ -27,6 +27,7 @@ CONF_ADAPT_ONLY_ON_STATE_CHANGE = "adapt_only_on_state_change"
 CONF_MANUAL_CONTROL_RESET_MINUTES = "manual_control_reset_minutes"
 CONF_SEPARATE_TURN_ON_COMMANDS = "separate_turn_on_commands"
 CONF_SEND_SPLIT_DELAY = "send_split_delay"
+CONF_SERIALIZED_NATIVE_FADES = "serialized_native_fades"
 SECTION_BRIGHTNESS = "brightness"
 SECTION_COLOR_TEMP = "color_temp"
 SECTION_ADVANCED = "advanced"
@@ -121,6 +122,7 @@ TARGET_SCHEMA = vol.Schema(
                     ),
                     vol.Optional(CONF_SEPARATE_TURN_ON_COMMANDS, default=False): bool,
                     vol.Optional(CONF_SEND_SPLIT_DELAY, default=0.0): _number(),
+                    vol.Optional(CONF_SERIALIZED_NATIVE_FADES, default=False): bool,
                 }
             ),
             {"collapsed": True},

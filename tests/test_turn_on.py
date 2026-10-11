@@ -2,6 +2,9 @@
 
 import asyncio
 import dataclasses
+import datetime
+import logging
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -9,6 +12,8 @@ from homeassistant.components import light
 from homeassistant.core import Context, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import area_registry, entity_registry, service
+from homeassistant.helpers.entity_platform import EntityPlatform
+from homeassistant.helpers.group import IntegrationSpecificGroup
 from homeassistant.util import dt as dt_util
 
 from custom_components.daylight.turn_on import (
@@ -76,10 +81,62 @@ class RecordingLight(light.LightEntity):
         self.async_write_ha_state()
 
 
+class RecordingMulticastGroup(RecordingLight):
+    """A group entity whose one native call reports all leaves contextlessly."""
+
+    def __init__(self, name, members):
+        super().__init__(name)
+        self.members = members
+        unique_ids = [member.unique_id for member in members]
+        self.group = IntegrationSpecificGroup(self, unique_ids)
+        zha_platform = object()
+        physical_members = [
+            SimpleNamespace(
+                associated_entities=[
+                    SimpleNamespace(
+                        PLATFORM=zha_platform,
+                        identifiers=SimpleNamespace(unique_id=unique_id),
+                    )
+                ]
+            )
+            for unique_id in unique_ids
+        ]
+        self.entity_data = SimpleNamespace(
+            entity=SimpleNamespace(PLATFORM=zha_platform),
+            group_proxy=SimpleNamespace(
+                group=SimpleNamespace(members=physical_members)
+            ),
+        )
+
+    async def async_turn_on(self, **kwargs):
+        self.calls.append(kwargs)
+        self.contexts.append(self._context)
+        self.started.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        for member in self.members:
+            member.async_set_context(Context())
+            member._attr_is_on = True
+            member._attr_brightness = kwargs.get("brightness", member.brightness)
+            member._attr_color_temp_kelvin = kwargs.get(
+                "color_temp_kelvin", member.color_temp_kelvin
+            )
+            member.async_write_ha_state()
+        self._attr_is_on = True
+        self.async_write_ha_state()
+        if self.fail:
+            raise HomeAssistantError("device failure")
+
+
 @pytest.fixture(autouse=True)
 def restore_hook(monkeypatch):
     monkeypatch.setattr(
         service, "_handle_single_entity_call", service._handle_single_entity_call
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolve_entity_service_call_entities",
+        service._resolve_entity_service_call_entities,
     )
 
 
@@ -94,6 +151,45 @@ async def setup_lights(hass, hass_config_dir, *, subentries=None, **settings):
     await hass.data[light.DATA_COMPONENT].async_add_entities(bulbs)
     await _turn_switch_on(hass)
     return entry, _switch_entity(hass), bulbs
+
+
+async def setup_multicast_lights(
+    hass, hass_config_dir, *, explicit_group_owner=False, **settings
+):
+    """Add two integration-specific ZHA groups and their six leaf entities."""
+    leaves = [RecordingLight(f"group_leaf_{index}") for index in range(6)]
+    groups = [
+        RecordingMulticastGroup("zha_group_one", leaves[:3]),
+        RecordingMulticastGroup("zha_group_two", leaves[3:]),
+    ]
+    subentries = [
+        _target_subentry(entities=[leaf.entity_id for leaf in leaves], **settings)
+    ]
+    if explicit_group_owner:
+        subentries.append(
+            _target_subentry("Group", entities=[groups[0].entity_id])
+        )
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        subentries,
+        lights=(),
+    )
+    zha_platform = EntityPlatform(
+        hass=hass,
+        logger=logging.getLogger(__name__),
+        domain="light",
+        platform_name="zha",
+        platform=None,
+        scan_interval=datetime.timedelta(seconds=30),
+        entity_namespace=None,
+    )
+    await zha_platform.async_add_entities([*leaves, *groups])
+    await hass.async_block_till_done()
+    await _turn_switch_on(hass)
+    if explicit_group_owner:
+        await _turn_switch_on(hass, "switch.group_adapt")
+    return entry, _switch_entity(hass), groups, leaves
 
 
 async def call(hass, service_name="turn_on", *, context=None, **params):
@@ -691,8 +787,10 @@ async def test_unload_reload_and_newer_wrapper_coexist(
     enable_custom_integrations, hass, hass_config_dir, monkeypatch
 ):
     predecessor = service._handle_single_entity_call
+    resolver_predecessor = service._resolve_entity_service_call_entities
     entry, switch, (bulb, _, _) = await setup_lights(hass, hass_config_dir)
     wrapper = service._handle_single_entity_call
+    assert service._resolve_entity_service_call_entities is not resolver_predecessor
     calls = []
 
     async def newer(hass, entity, func, data):
@@ -702,6 +800,7 @@ async def test_unload_reload_and_newer_wrapper_coexist(
     monkeypatch.setattr(service, "_handle_single_entity_call", newer)
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert service._handle_single_entity_call is newer
+    assert service._resolve_entity_service_call_entities is resolver_predecessor
     bulb.feedback = False
     await call(hass, brightness=33)
     assert bulb.calls == [{"brightness": 33}]
@@ -714,22 +813,47 @@ async def test_unload_reload_and_newer_wrapper_coexist(
     assert calls.count(bulb.entity_id) == 2
     assert await hass.config_entries.async_unload(entry.entry_id)
     assert service._handle_single_entity_call is newer
+    assert service._resolve_entity_service_call_entities is resolver_predecessor
     monkeypatch.setattr(service, "_handle_single_entity_call", predecessor)
 
 
-@pytest.mark.parametrize("missing", [True, False])
-async def test_unsupported_hook_fails_safely(hass, monkeypatch, caplog, missing):
+@pytest.mark.parametrize(
+    "hook", ["dispatch-missing", "dispatch", "dispatch-keyword", "resolver"]
+)
+async def test_unsupported_hook_fails_safely(hass, monkeypatch, caplog, hook):
     async def incompatible(a):
         return a
 
-    if missing:
+    async def keyword_only(*, hass, entity, func, data):
+        return None
+
+    dispatch = service._handle_single_entity_call
+    resolver = service._resolve_entity_service_call_entities
+    if hook == "dispatch-missing":
         monkeypatch.delattr(service, "_handle_single_entity_call")
+    elif hook in ("dispatch", "dispatch-keyword"):
+        monkeypatch.setattr(
+            service,
+            "_handle_single_entity_call",
+            incompatible if hook == "dispatch" else keyword_only,
+        )
     else:
-        monkeypatch.setattr(service, "_handle_single_entity_call", incompatible)
+        monkeypatch.setattr(
+            service, "_resolve_entity_service_call_entities", incompatible
+        )
     interceptor = TurnOnInterceptor(hass)
     assert "signature is unsupported" in caplog.text
     assert getattr(service, "_handle_single_entity_call", None) is (
-        None if missing else incompatible
+        None
+        if hook == "dispatch-missing"
+        else incompatible
+        if hook == "dispatch"
+        else keyword_only
+        if hook == "dispatch-keyword"
+        else dispatch
+    )
+    assert service._resolve_entity_service_call_entities is (
+        incompatible if hook == "resolver" else resolver
     )
     assert not interceptor.owners
 
@@ -823,6 +947,713 @@ async def test_area_resolution_and_member_refresh(
     assert hall.calls[-1] == {"brightness": 1}
 
 
+@pytest.mark.parametrize("groups_first", [True, False])
+async def test_zha_groups_keep_multicast_with_fresh_first_command(
+    enable_custom_integrations, hass, hass_config_dir, groups_first
+):
+    entry, switch, groups, leaves = await setup_multicast_lights(
+        hass, hass_config_dir
+    )
+    area = area_registry.async_get(hass).async_create("Multicast room")
+    registry = entity_registry.async_get(hass)
+    for entity in [*groups, *leaves]:
+        registry.async_update_entity(entity.entity_id, area_id=area.id)
+    await hass.async_block_till_done()
+    selected = [*groups, *leaves] if groups_first else [*leaves, *groups]
+    context = Context()
+
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ) as fresh:
+        await hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": [entity.entity_id for entity in selected], "brightness": 1},
+            context=context,
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    fresh.assert_called_once()
+    assert [group.calls for group in groups] == [
+        [{"brightness": 178, "color_temp_kelvin": 3400, "transition": 0.0}],
+        [{"brightness": 178, "color_temp_kelvin": 3400, "transition": 0.0}],
+    ]
+    assert all(group.contexts == [context] for group in groups)
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert not any(
+        switch._target.is_manual(leaf.entity_id, now=dt_util.utcnow().timestamp())
+        for leaf in leaves
+    )
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves}
+    assert not switch._native_pending
+
+    # Once the short receipts end, periodic adaptation remains leaf-based.
+    for receipt in tuple(switch._receipts.values()):
+        assert receipt.expiry is not None
+        receipt.expiry._run()
+    entry.runtime_data.async_set_updated_data(_DAY_STATE)
+    await hass.async_block_till_done()
+    assert [len(group.calls) for group in groups] == [1, 1]
+    assert all(len(leaf.calls) == 1 for leaf in leaves)
+
+
+async def test_zha_area_call_retains_groups_and_suppresses_covered_leaves(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    entry, _, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    area = area_registry.async_get(hass).async_create("ZHA area")
+    registry = entity_registry.async_get(hass)
+    for entity in [*groups, *leaves]:
+        registry.async_update_entity(entity.entity_id, area_id=area.id)
+    await hass.async_block_till_done()
+
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ) as fresh:
+        await hass.services.async_call(
+            "light",
+            "turn_on",
+            {"area_id": area.id},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    fresh.assert_called_once()
+    assert all(
+        group.calls
+        == [{"brightness": 178, "color_temp_kelvin": 3400, "transition": 0.0}]
+        for group in groups
+    )
+    assert all(leaf.calls == [] for leaf in leaves)
+
+
+@pytest.mark.parametrize("selection", ["group", "area"])
+async def test_zha_off_historical_manual_flags_still_use_fresh_multicast(
+    enable_custom_integrations, hass, hass_config_dir, selection
+):
+    entry, switch, groups, leaves = await setup_multicast_lights(
+        hass, hass_config_dir
+    )
+    service_data = {"entity_id": groups[0].entity_id}
+    if selection == "area":
+        area = area_registry.async_get(hass).async_create("Historical manual")
+        registry = entity_registry.async_get(hass)
+        for entity in [groups[0], *leaves[:3]]:
+            registry.async_update_entity(entity.entity_id, area_id=area.id)
+        await hass.async_block_till_done()
+        service_data = {"area_id": area.id}
+    now = dt_util.utcnow().timestamp()
+    for leaf in leaves[:3]:
+        switch._target.observe_state_change(
+            leaf.entity_id, f"old-{leaf.entity_id}", timestamp=now
+        )
+        assert switch._target.is_manual(leaf.entity_id, now=now)
+
+    gate = groups[0].gate = asyncio.Event()
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ):
+        task = hass.async_create_task(
+            hass.services.async_call(
+                "light", "turn_on", service_data, blocking=True
+            )
+        )
+        await groups[0].started.wait()
+        assert all(
+            switch._target.is_manual(
+                leaf.entity_id, now=dt_util.utcnow().timestamp()
+            )
+            for leaf in leaves[:3]
+        )
+        gate.set()
+        await task
+        await hass.async_block_till_done()
+
+    assert groups[0].calls == [
+        {"brightness": 178, "color_temp_kelvin": 3400, "transition": 0.0}
+    ]
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert not any(
+        switch._target.is_manual(
+            leaf.entity_id, now=dt_util.utcnow().timestamp()
+        )
+        for leaf in leaves[:3]
+    )
+
+
+async def test_batched_resolver_caller_never_filters_selected_leaves(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    selected = [groups[0], *leaves[:3]]
+    seen = []
+
+    async def batched(entities, call):
+        seen.extend(entities)
+
+    call_data = ServiceCall(
+        hass,
+        "light",
+        "turn_on",
+        {
+            "entity_id": [entity.entity_id for entity in selected],
+            "params": {},
+        },
+    )
+    await service.batched_entity_service_call(
+        hass,
+        hass.data[light.DATA_COMPONENT]._entities,
+        batched,
+        call_data,
+    )
+
+    assert {entity.entity_id for entity in seen} == {
+        entity.entity_id for entity in selected
+    }
+    assert not switch._receipts
+    assert not switch._interceptor._plans
+
+
+async def test_zha_group_only_call_does_not_expand_authority(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    entry, switch, groups, leaves = await setup_multicast_lights(
+        hass, hass_config_dir
+    )
+    with patch.object(
+        entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
+    ) as fresh:
+        await hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id},
+            blocking=True,
+        )
+        await hass.async_block_till_done()
+
+    fresh.assert_called_once()
+    assert groups[0].calls == [
+        {"brightness": 178, "color_temp_kelvin": 3400, "transition": 0.0}
+    ]
+    assert groups[1].calls == []
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+
+
+@pytest.mark.parametrize("service_name", ["turn_off", "toggle"])
+async def test_zha_group_off_services_invalidate_member_receipts(
+    enable_custom_integrations, hass, hass_config_dir, service_name
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": groups[0].entity_id},
+        blocking=True,
+    )
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+    if service_name == "toggle":
+
+        async def toggle(**kwargs):
+            groups[0].off_calls.append(kwargs)
+
+        groups[0].async_toggle = toggle
+
+    await hass.services.async_call(
+        "light",
+        service_name,
+        {"entity_id": groups[0].entity_id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert not switch._receipts
+    assert groups[0].off_calls == [{}]
+
+
+@pytest.mark.parametrize("service_name", ["turn_off", "toggle"])
+async def test_zha_group_off_services_invalidate_queued_plan(
+    enable_custom_integrations, hass, hass_config_dir, service_name
+):
+    _, switch, groups, _ = await setup_multicast_lights(hass, hass_config_dir)
+    gate = asyncio.Event()
+    first = True
+
+    async def queued_request(coro):
+        nonlocal first
+        if first:
+            first = False
+            await gate.wait()
+        return await coro
+
+    groups[0].async_request_call = queued_request
+    if service_name == "toggle":
+
+        async def toggle(**kwargs):
+            groups[0].off_calls.append(kwargs)
+
+        groups[0].async_toggle = toggle
+    task = hass.async_create_task(
+        hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id, "brightness": 1},
+            blocking=True,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if switch._interceptor._plans:
+            break
+
+    await hass.services.async_call(
+        "light",
+        service_name,
+        {"entity_id": groups[0].entity_id},
+        blocking=True,
+    )
+    gate.set()
+    await task
+    await hass.async_block_till_done()
+
+    assert groups[0].off_calls == [{}]
+    assert groups[0].calls == [{"brightness": 1}]
+    assert not switch._receipts
+
+
+async def test_zha_group_reused_context_gets_a_new_invocation_plan(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    context = Context()
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": groups[0].entity_id},
+        context=context,
+        blocking=True,
+    )
+    first_receipts = dict(switch._receipts)
+    for entity in [groups[0], *leaves[:3]]:
+        entity._attr_is_on = False
+        entity.async_set_context(Context())
+        entity.async_write_ha_state()
+    await hass.async_block_till_done()
+    switch._target.clear_all_manual_flags()
+    for leaf in leaves:
+        leaf.calls.clear()
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": groups[0].entity_id},
+        context=context,
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert len(groups[0].calls) == 2
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+    assert all(
+        switch._receipts[entity_id] is not receipt
+        for entity_id, receipt in first_receipts.items()
+    )
+
+
+async def test_zha_group_failure_after_feedback_is_never_replayed_as_unicasts(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    groups[0].fail = True
+
+    with pytest.raises(HomeAssistantError, match="device failure"):
+        await hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id},
+            blocking=True,
+        )
+    await hass.async_block_till_done()
+
+    assert len(groups[0].calls) == 1
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert not switch._native_pending
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+    for receipt in tuple(switch._receipts.values()):
+        assert receipt.expiry is not None
+        receipt.expiry._run()
+    assert not switch._receipts
+
+
+async def test_zha_plan_waiting_for_platform_has_no_armed_receipts(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, switch, groups, _ = await setup_multicast_lights(hass, hass_config_dir)
+    semaphore = asyncio.Semaphore(0)
+
+    async def queued_request(coro):
+        try:
+            await semaphore.acquire()
+        except asyncio.CancelledError:
+            inner = coro.cr_frame.f_locals["coro"]
+            inner.close()
+            coro.close()
+            raise
+        return await coro
+
+    groups[0].async_request_call = queued_request
+    task = hass.async_create_task(
+        hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id},
+            blocking=True,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if switch._interceptor._plans:
+            break
+    assert switch._interceptor._plans
+    assert not switch._receipts
+    assert not switch._native_pending
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await hass.async_block_till_done()
+    assert not switch._interceptor._plans
+    assert not switch._receipts
+
+
+async def test_zha_uncovered_same_call_leaf_does_not_invalidate_group_plan(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, _, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    semaphore = groups[0].parallel_updates = asyncio.Semaphore(0)
+    task = hass.async_create_task(
+        hass.services.async_call(
+            "light",
+            "turn_on",
+            {
+                "entity_id": [groups[0].entity_id, leaves[3].entity_id],
+                "brightness": 1,
+            },
+            blocking=True,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if leaves[3].calls:
+            break
+    semaphore.release()
+    await task
+    await hass.async_block_till_done()
+
+    assert groups[0].calls[0]["brightness"] != 1
+    assert all(leaf.calls == [] for leaf in leaves[:3])
+    assert len(leaves[3].calls) == 1
+
+
+@pytest.mark.parametrize("changed", ["membership", "physical", "owner"])
+async def test_zha_dispatch_revalidates_after_queued_changes(
+    enable_custom_integrations, hass, hass_config_dir, changed
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    semaphore = groups[0].parallel_updates = asyncio.Semaphore(0)
+    task = hass.async_create_task(
+        hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id, "brightness": 1},
+            blocking=True,
+        )
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if switch._interceptor._plans:
+            break
+    if changed == "membership":
+        switch._settings = dataclasses.replace(
+            switch._settings,
+            entities=tuple(leaf.entity_id for leaf in leaves[1:]),
+        )
+        switch._refresh_members()
+    elif changed == "physical":
+        groups[0].entity_data.group_proxy.group.members.append(
+            SimpleNamespace(associated_entities=[])
+        )
+    else:
+        switch._interceptor.owners[Mock()] = (leaves[0].entity_id,)
+    semaphore.release()
+    await task
+    await hass.async_block_till_done()
+
+    assert groups[0].calls == [{"brightness": 1}]
+    assert not switch._receipts
+
+
+@pytest.mark.parametrize("stop", ["cancel", "unload"])
+async def test_zha_group_pending_cleanup(
+    enable_custom_integrations, hass, hass_config_dir, stop
+):
+    entry, switch, groups, leaves = await setup_multicast_lights(
+        hass, hass_config_dir
+    )
+    gate = groups[0].gate = asyncio.Event()
+    task = hass.async_create_task(
+        hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id},
+            blocking=True,
+        )
+    )
+    await groups[0].started.wait()
+    plan = next(iter(switch._interceptor._plans.values()))
+    assert plan.task is task
+    assert plan.done_callback is not None
+    assert set(switch._native_pending) == {leaf.entity_id for leaf in leaves[:3]}
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+
+    if stop == "cancel":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        gate.set()
+        await task
+    await hass.async_block_till_done()
+
+    assert plan.task is None
+    assert plan.done_callback is None
+    assert not switch._native_pending
+    if stop == "cancel":
+        assert set(switch._receipts) == {
+            leaf.entity_id for leaf in leaves[:3]
+        }
+        for leaf in leaves[:3]:
+            leaf.async_set_context(Context())
+            leaf._attr_is_on = True
+            leaf.async_write_ha_state()
+        await hass.async_block_till_done()
+        assert all(leaf.calls == [] for leaf in leaves)
+        for receipt in tuple(switch._receipts.values()):
+            receipt.expiry._run()
+    assert not switch._receipts
+    assert all(leaf.calls == [] for leaf in leaves)
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    [
+        "partial",
+        "mixed",
+        "manual_on",
+        "unavailable",
+        "capabilities",
+        "physical",
+        "overlap",
+        "untrusted_overlap",
+    ],
+)
+async def test_zha_unsafe_topologies_preserve_native_fallback(
+    enable_custom_integrations, hass, hass_config_dir, unsafe
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    selected_groups = groups[:1]
+    if unsafe == "partial":
+        switch._settings = dataclasses.replace(
+            switch._settings,
+            entities=tuple(leaf.entity_id for leaf in leaves if leaf is not leaves[0]),
+        )
+        switch._refresh_members()
+    elif unsafe == "mixed":
+        leaves[0]._attr_is_on = True
+        leaves[0].async_write_ha_state()
+        await hass.async_block_till_done()
+    elif unsafe == "manual_on":
+        leaves[0]._attr_is_on = True
+        leaves[0].async_write_ha_state()
+        await hass.async_block_till_done()
+        switch._target.observe_state_change(
+            leaves[0].entity_id,
+            "manual",
+            timestamp=dt_util.utcnow().timestamp(),
+        )
+    elif unsafe == "unavailable":
+        leaves[0]._attr_available = False
+        leaves[0].async_write_ha_state()
+        await hass.async_block_till_done()
+    elif unsafe == "capabilities":
+        leaves[0]._attr_min_color_temp_kelvin = 2000
+        leaves[0]._attr_max_color_temp_kelvin = 2500
+        leaves[1]._attr_min_color_temp_kelvin = 4000
+        leaves[1]._attr_max_color_temp_kelvin = 4500
+        leaves[0].async_write_ha_state()
+        leaves[1].async_write_ha_state()
+        await hass.async_block_till_done()
+    elif unsafe == "physical":
+        groups[0].entity_data.group_proxy.group.members.append(
+            SimpleNamespace(associated_entities=[])
+        )
+    else:
+        overlap_ids = [
+            leaves[0].unique_id,
+            *[leaf.unique_id for leaf in leaves[3:]],
+        ]
+        groups[1].group.member_unique_ids = overlap_ids
+        if unsafe == "overlap":
+            platform = groups[1].entity_data.entity.PLATFORM
+            groups[1].entity_data.group_proxy.group.members = [
+                SimpleNamespace(
+                    associated_entities=[
+                        SimpleNamespace(
+                            PLATFORM=platform,
+                            identifiers=SimpleNamespace(unique_id=unique_id),
+                        )
+                    ]
+                )
+                for unique_id in overlap_ids
+            ]
+        groups[1].async_write_ha_state()
+        await hass.async_block_till_done()
+        selected_groups = groups
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {
+            "entity_id": [group.entity_id for group in selected_groups],
+            "brightness": 1,
+        },
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert all(group.calls == [{"brightness": 1}] for group in selected_groups)
+
+
+async def test_selected_software_group_makes_zha_plan_fail_native(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, _, groups, _ = await setup_multicast_lights(hass, hass_config_dir)
+    software = RecordingLight("software_group")
+    software.group = IntegrationSpecificGroup(software, [])
+    await hass.data[light.DATA_COMPONENT].async_add_entities([software])
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {
+            "entity_id": [groups[0].entity_id, software.entity_id],
+            "brightness": 1,
+        },
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert groups[0].calls == [{"brightness": 1}]
+
+
+async def test_zha_final_kwargs_include_entity_default_profiles(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, _, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    for entity in [groups[0], *leaves[:3]]:
+        entity._attr_supported_color_modes = {light.ColorMode.RGB}
+        entity._attr_color_mode = light.ColorMode.RGB
+        entity.async_write_ha_state()
+    hass.data[light.DATA_PROFILES].data[f"{groups[0].entity_id}.default"] = (
+        light.Profile("group-default", 0.2, 0.3, None)
+    )
+    await hass.async_block_till_done()
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": groups[0].entity_id, "brightness": 1},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert len(groups[0].calls) == 1
+    assert groups[0].calls[0]["brightness"] == 1
+    assert "rgb_color" in groups[0].calls[0]
+
+
+async def test_zha_explicit_group_owner_keeps_existing_semantics(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    _, leaf_switch, groups, leaves = await setup_multicast_lights(
+        hass, hass_config_dir, explicit_group_owner=True
+    )
+    group_switch = _switch_entity(hass, "switch.group_adapt")
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": groups[0].entity_id, "brightness": 1},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert len(groups[0].calls) == 1
+    assert groups[0].calls[0]["brightness"] != 1
+    assert set(groups[0].calls[0]) == {
+        "brightness",
+        "color_temp_kelvin",
+        "transition",
+    }
+    assert not leaf_switch._receipts
+    assert set(group_switch._receipts) == {groups[0].entity_id}
+    assert all(leaf.entity_id not in group_switch._receipts for leaf in leaves)
+
+
+async def test_zha_split_setting_preserves_existing_group_fallback(
+    enable_custom_integrations, hass, hass_config_dir
+):
+    leaves = [RecordingLight(f"split_group_leaf_{index}") for index in range(2)]
+    group = RecordingMulticastGroup("split_zha_group", leaves)
+    await _setup(
+        hass,
+        hass_config_dir,
+        [
+            _target_subentry(
+                entities=[leaf.entity_id for leaf in leaves],
+                separate_turn_on_commands=True,
+            )
+        ],
+        lights=(),
+    )
+    zha_platform = EntityPlatform(
+        hass=hass,
+        logger=logging.getLogger(__name__),
+        domain="light",
+        platform_name="zha",
+        platform=None,
+        scan_interval=datetime.timedelta(seconds=30),
+        entity_namespace=None,
+    )
+    await zha_platform.async_add_entities([*leaves, group])
+    await hass.async_block_till_done()
+    await _turn_switch_on(hass)
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": group.entity_id, "brightness": 1},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert group.calls == [{"brightness": 1}]
+
+
 async def test_group_remains_one_native_entity(
     enable_custom_integrations, hass, hass_config_dir
 ):
@@ -875,6 +1706,49 @@ async def test_context_free_reporting_grace_is_bounded(
     bulb.async_write_ha_state()
     await hass.async_block_till_done()
     assert manual(switch)
+
+
+async def test_zha_restricted_user_can_use_authorized_group_without_leaf_access(
+    enable_custom_integrations, hass, hass_config_dir, hass_read_only_user
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    hass_read_only_user.mock_policy(
+        {
+            "entities": {
+                "entity_ids": {groups[0].entity_id: {"control": True}}
+            }
+        }
+    )
+
+    await hass.services.async_call(
+        "light",
+        "turn_on",
+        {"entity_id": groups[0].entity_id},
+        context=Context(user_id=hass_read_only_user.id),
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert len(groups[0].calls) == 1
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+
+
+async def test_zha_group_permissions_remain_enforced_before_planning(
+    enable_custom_integrations, hass, hass_config_dir, hass_read_only_user
+):
+    _, switch, groups, leaves = await setup_multicast_lights(hass, hass_config_dir)
+    with pytest.raises(Unauthorized):
+        await hass.services.async_call(
+            "light",
+            "turn_on",
+            {"entity_id": groups[0].entity_id},
+            context=Context(user_id=hass_read_only_user.id),
+            blocking=True,
+        )
+    assert groups[0].calls == []
+    assert all(leaf.calls == [] for leaf in leaves)
+    assert not switch._receipts
 
 
 async def test_ha_permissions_remain_enforced(

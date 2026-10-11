@@ -30,27 +30,24 @@ async def test_separate_turn_on_commands_split_brightness_from_colour(
         hass_config_dir,
         [
             _target_subentry(
-                separate_turn_on_commands=True, send_split_delay=0.05
+                transition=120.0,
+                separate_turn_on_commands=True,
+                send_split_delay=0.05,
             )
         ],
+        hub_data_overrides={"update_interval_seconds": 15},
     )
     calls = async_mock_service(hass, "light", "turn_on")
 
-    with patch(
-        "custom_components.daylight.switch.compute_turn_on_kwargs",
-        return_value=dict(_STUB_KWARGS),
-    ):
-        # Inside the patch: resuming adapts too, and would otherwise split a
-        # real command and sleep for the real delay.
-        await _turn_switch_on(hass)
-        calls.clear()
-        started = time.monotonic()
-        await _tick(hass, entry)
-        elapsed = time.monotonic() - started
+    await _turn_switch_on(hass)
+    calls.clear()
+    started = time.monotonic()
+    await _tick(hass, entry)
+    elapsed = time.monotonic() - started
 
     assert [call.data for call in calls] == [
-        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 62, "transition": 4.0},
-        {"entity_id": KITCHEN_LIGHT, "color_temp_kelvin": 3200, "transition": 4.0},
+        {"entity_id": KITCHEN_LIGHT, "brightness_pct": 70, "transition": 15.0},
+        {"entity_id": KITCHEN_LIGHT, "color_temp_kelvin": 3400, "transition": 15.0},
     ]
     assert elapsed >= 0.05
 

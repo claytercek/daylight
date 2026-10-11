@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -35,11 +36,13 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
 from .adaptation import compute_turn_on_kwargs
+from .config import CONF_SERIALIZED_NATIVE_FADES
 from .coordinator import DayCoordinator, DayState
 from .target import SUPPRESSION_GRACE_SECONDS, Target, TargetConfig
 from .turn_on import (
     COLOR_KEYS,
     SPECIAL_KEYS,
+    MulticastCommand,
     TurnOnCommand,
     TurnOnInterceptor,
     register,
@@ -117,6 +120,7 @@ class TargetSettings:
     adapt_only_on_state_change: bool
     separate_turn_on_commands: bool
     send_split_delay: float
+    serialized_native_fades: bool = False
 
     @classmethod
     def from_subentry_data(cls, data) -> TargetSettings:
@@ -132,6 +136,7 @@ class TargetSettings:
             adapt_only_on_state_change=data["adapt_only_on_state_change"],
             separate_turn_on_commands=data["separate_turn_on_commands"],
             send_split_delay=data["send_split_delay"],
+            serialized_native_fades=data.get(CONF_SERIALIZED_NATIVE_FADES, False),
         )
 
 
@@ -179,6 +184,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._attr_name = f"{subentry.title} adapt"
         self._attr_is_on = False
         self._send_tasks: dict[str, asyncio.Task[None]] = {}
+        self._serialized_tasks: set[asyncio.Task[None]] = set()
         self._members: tuple[str, ...] = ()
         self._area_candidates: tuple[str, ...] = ()
         self._unsubscribe_members = None
@@ -186,6 +192,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._interceptor: TurnOnInterceptor | None = None
         self._receipts: dict[str, _TurnOnReceipt] = {}
         self._native_pending: dict[str, int] = {}
+        self._transport_generation: dict[str, int] = {}
 
     @property
     def extra_restore_state_data(self) -> TargetStoredData:
@@ -290,6 +297,10 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             return
         previous = set(self._members)
         members = set(resolved)
+        for entity_id in previous | members:
+            self._transport_generation[entity_id] = (
+                self._transport_generation.get(entity_id, 0) + 1
+            )
         self._remove_member_listener()
         for removed in previous - members:
             self._cancel_send(removed)
@@ -475,6 +486,9 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             entity_id, call.context.id, call.context.parent_id
         ):
             return
+        self._transport_generation[entity_id] = (
+            self._transport_generation.get(entity_id, 0) + 1
+        )
         self._cancel_send(entity_id)
         self._target.clear_reporting_grace(entity_id)
 
@@ -490,15 +504,180 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             or state.state != STATE_OFF
         ):
             return None
+        now = dt_util.utcnow()
+        prepared = self._prepare_turn_on_values(
+            state, call, self.coordinator.compute_day_state(now), allow_split=True
+        )
+        if prepared is None:
+            return None
+        params, color, split = prepared
+        return TurnOnCommand(
+            params,
+            self._arm_turn_on_receipt(entity_id, call, color=color, split=split),
+        )
+
+    def plan_multicast_turn_on(
+        self, groups: Mapping[str, tuple[str, ...]], call: ServiceCall
+    ) -> dict[str, MulticastCommand] | None:
+        """Build a side-effect-free plan; receipts wait for native dispatch."""
+        if not self.is_on or self._settings.separate_turn_on_commands:
+            return None
+        generations = {
+            entity_id: self._transport_generation.get(entity_id, 0)
+            for members in groups.values()
+            for entity_id in members
+        }
+        dispatch_day_state: list[DayState] = []
+        all_members: set[str] = set()
+        for group_id, members in groups.items():
+            if not self._multicast_ready(group_id, members, seen=all_members):
+                return None
+
+        commands: dict[str, MulticastCommand] = {}
+        for group_id, members in groups.items():
+
+            def activate(
+                *,
+                planned_group: str = group_id,
+                planned_members: tuple[str, ...] = members,
+                planned_generations: dict[str, int] = generations,
+            ) -> TurnOnCommand | None:
+                if any(
+                    self._transport_generation.get(entity_id, 0)
+                    != planned_generations[entity_id]
+                    for entity_id in planned_members
+                ):
+                    return None
+                dispatch_now = dt_util.utcnow()
+                if not dispatch_day_state:
+                    dispatch_day_state.append(
+                        self.coordinator.compute_day_state(dispatch_now)
+                    )
+                current = self._multicast_values(
+                    planned_group,
+                    planned_members,
+                    call,
+                    dispatch_day_state[0],
+                    seen=set(),
+                )
+                if current is None:
+                    return None
+                finishes = [
+                    self._arm_turn_on_receipt(
+                        entity_id,
+                        call,
+                        color=current.get(COLOR_TEMP_KWARG),
+                        split=False,
+                        preserve_failure=True,
+                    )
+                    for entity_id in planned_members
+                ]
+                completed = False
+
+                def finish(success: bool) -> None:
+                    nonlocal completed
+                    if completed:
+                        return
+                    completed = True
+                    for member_finish in finishes:
+                        member_finish(success)
+
+                def cancel() -> None:
+                    for entity_id in planned_members:
+                        self._cancel_send(entity_id)
+
+                return TurnOnCommand(current, finish, cancel)
+
+            commands[group_id] = MulticastCommand(activate)
+        return commands
+
+    def _multicast_ready(
+        self,
+        group_id: str,
+        members: tuple[str, ...],
+        *,
+        seen: set[str],
+    ) -> bool:
+        """Check side-effect-free state eligibility without schedule evaluation."""
+        group_state = self.hass.states.get(group_id)
+        if (
+            not self.is_on
+            or self._settings.separate_turn_on_commands
+            or group_state is None
+            or group_state.state != STATE_OFF
+        ):
+            return False
+        for entity_id in members:
+            state = self.hass.states.get(entity_id)
+            if (
+                entity_id in seen
+                or entity_id not in self._members
+                or state is None
+                or state.state != STATE_OFF
+            ):
+                return False
+            seen.add(entity_id)
+        return True
+
+    def _multicast_values(
+        self,
+        group_id: str,
+        members: tuple[str, ...],
+        call: ServiceCall,
+        day_state: DayState,
+        *,
+        seen: set[str],
+    ) -> dict[str, Any] | None:
+        """Require a currently homogeneous, known-off leaf set."""
+        group_state = self.hass.states.get(group_id)
+        if (
+            not self.is_on
+            or self._settings.separate_turn_on_commands
+            or group_state is None
+            or group_state.state != STATE_OFF
+        ):
+            return None
+        member_params: dict[str, Any] | None = None
+        for entity_id in members:
+            state = self.hass.states.get(entity_id)
+            if (
+                entity_id in seen
+                or entity_id not in self._members
+                or state is None
+                or state.state != STATE_OFF
+            ):
+                return None
+            prepared = self._prepare_turn_on_values(
+                state, call, day_state, allow_split=False
+            )
+            if prepared is None:
+                return None
+            params, _color, split = prepared
+            if split or (member_params is not None and params != member_params):
+                return None
+            member_params = params
+            seen.add(entity_id)
+        if member_params is None or not self._group_supports_params(
+            group_state, member_params
+        ):
+            return None
+        return member_params
+
+    def _prepare_turn_on_values(
+        self,
+        state: State,
+        call: ServiceCall,
+        day_state: DayState,
+        *,
+        allow_split: bool,
+    ) -> tuple[dict[str, Any], int | None, bool] | None:
+        """Compute native params without mutating receipts or pending state."""
         params = dict(call.data["params"])
         if SPECIAL_KEYS.intersection(params) or any(
             params.get(key) == 0 for key in ("brightness", "brightness_pct", "white")
         ):
             return None
-        now = dt_util.utcnow()
-        kwargs = self._adapt_kwargs(
-            state, self.coordinator.compute_day_state(now), snap=True
-        )
+        kwargs = self._adapt_kwargs(state, day_state, snap=True)
         if not kwargs:
             return None
         if BRIGHTNESS_KWARG in kwargs:
@@ -511,12 +690,33 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             params[COLOR_TEMP_KWARG] = color
         params[TRANSITION_KWARG] = 0.0
         split = (
-            self._settings.separate_turn_on_commands
+            allow_split
+            and self._settings.separate_turn_on_commands
             and BRIGHTNESS_KWARG in kwargs
             and color is not None
         )
         if split:
             del params[COLOR_TEMP_KWARG]
+        return params, color, split
+
+    @staticmethod
+    def _group_supports_params(state: State, params: Mapping[str, Any]) -> bool:
+        """Require the retained group entity to advertise the command's modes."""
+        modes = set(state.attributes.get("supported_color_modes") or ())
+        if COLOR_TEMP_KWARG in params and "color_temp" not in modes:
+            return False
+        return "brightness" not in params or bool(modes - {"onoff"})
+
+    def _arm_turn_on_receipt(
+        self,
+        entity_id: str,
+        call: ServiceCall,
+        *,
+        color: int | None,
+        split: bool,
+        preserve_failure: bool = False,
+    ) -> Any:
+        """Arm one leaf before native dispatch and return an idempotent finisher."""
         duration = SUPPRESSION_GRACE_SECONDS + (
             self._settings.send_split_delay if split else 0
         )
@@ -528,29 +728,39 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
                 self._cancel_send(entity_id)
 
         self._native_pending[entity_id] = self._native_pending.get(entity_id, 0) + 1
+        completed = False
 
         def finish(success: bool) -> None:
-            self._native_pending[entity_id] -= 1
-            if not self._native_pending[entity_id]:
-                del self._native_pending[entity_id]
+            nonlocal completed
+            if completed:
+                return
+            completed = True
+            pending = self._native_pending.get(entity_id, 0)
+            if pending <= 1:
+                self._native_pending.pop(entity_id, None)
+            else:
+                self._native_pending[entity_id] = pending - 1
             # The original service task belongs to HA, never to _send_tasks.
             if self._receipts.get(entity_id) is not receipt:
                 return
-            if not success:
+            if not success and not preserve_failure:
                 self._cancel_send(entity_id)
                 return
+            # A multicast handler can apply over the air and then raise. Keep
+            # its bounded receipt so late member reports cannot replay as
+            # unicasts. Cancellation explicitly calls the command's cancel hook.
             # Both the minimum split delay and bounded reporting grace start
             # after native dispatch; slow device handlers retain their receipt.
             receipt.expires = dt_util.utcnow().timestamp() + duration
             receipt.expiry = self.hass.loop.call_later(duration, expire)
-            if split and color is not None:
+            if success and split and color is not None:
                 task = self.hass.async_create_task(
                     self._async_finish_turn_on(entity_id, color, receipt)
                 )
                 self._send_tasks[entity_id] = task
                 task.add_done_callback(lambda done: self._finish_send(entity_id, done))
 
-        return TurnOnCommand(params, finish)
+        return finish
 
     async def _async_finish_turn_on(
         self, entity_id: str, color: int, receipt: _TurnOnReceipt
@@ -569,6 +779,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         self._drop_receipt(entity_id)
         task = self._send_tasks.pop(entity_id, None)
         if task is not None:
+            self._serialized_tasks.discard(task)
             task.cancel()
 
     @callback
@@ -588,10 +799,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         day_state = self.coordinator.data
         if day_state is None:
             return
-        now = dt_util.utcnow().timestamp()
         for entity_id in self._members:
-            if self._target.is_manual(entity_id, now=now):
-                continue
             self._async_adapt(entity_id, day_state)
 
     @callback
@@ -608,7 +816,11 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         `snap` bypasses the fade when a light comes on, joins a target, or
         adaptation resumes.
         """
-        # Finish the current split before considering another poll. Replacing
+        # Only a newer periodic update supersedes a serialized periodic fade.
+        # Cancel before eligibility/kwargs checks so stale phase two cannot survive.
+        if not snap and self._send_tasks.get(entity_id) in self._serialized_tasks:
+            self._cancel_send(entity_id)
+        # Finish the current legacy split before considering another poll. Replacing
         # it on every tick could postpone the color command indefinitely when
         # the poll interval is shorter than the configured split delay.
         if (
@@ -618,14 +830,27 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         ):
             return
         state = self.hass.states.get(entity_id)
-        if state is None or state.state != STATE_ON:
+        if state is None or not self._can_send(entity_id):
             return
         kwargs = self._adapt_kwargs(state, day_state, snap=snap)
         if not kwargs:
             return
+        serialized = (
+            not snap
+            and self._settings.serialized_native_fades
+            and BRIGHTNESS_KWARG in kwargs
+            and COLOR_TEMP_KWARG in kwargs
+            and kwargs.get(TRANSITION_KWARG, 0) > 0
+        )
         context = Context()
-        task = self.hass.async_create_task(self._async_send(entity_id, kwargs, context))
+        task = self.hass.async_create_task(
+            self._async_send(entity_id, kwargs, context, serialized=serialized),
+            # Register serialized task identity before either native dispatch.
+            eager_start=not serialized,
+        )
         self._send_tasks[entity_id] = task
+        if serialized:
+            self._serialized_tasks.add(task)
         task.add_done_callback(lambda done: self._finish_send(entity_id, done))
 
     def _adapt_kwargs(
@@ -634,6 +859,13 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         """Shared calculation for already-on adaptation and native turn-ons."""
         min_color_temp = state.attributes.get("min_color_temp_kelvin")
         max_color_temp = state.attributes.get("max_color_temp_kelvin")
+        # Cap only the outgoing periodic command; the configured maximum stays
+        # intact if the hub interval is increased later.
+        transition = 0.0
+        if not snap:
+            update_interval = self.coordinator.update_interval
+            assert update_interval is not None
+            transition = min(self._settings.transition, update_interval.total_seconds())
         return compute_turn_on_kwargs(
             supported_color_modes=set(
                 state.attributes.get("supported_color_modes") or []
@@ -644,7 +876,7 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
             max_brightness_pct=self._settings.max_brightness_pct,
             min_color_temp_kelvin=self._settings.min_color_temp_kelvin,
             max_color_temp_kelvin=self._settings.max_color_temp_kelvin,
-            transition=0.0 if snap else self._settings.transition,
+            transition=transition,
             device_min_color_temp_kelvin=(
                 min_color_temp if isinstance(min_color_temp, int) else None
             ),
@@ -655,16 +887,29 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
 
     @callback
     def _finish_send(self, entity_id: str, task: asyncio.Task[None]) -> None:
+        self._serialized_tasks.discard(task)
         if self._send_tasks.get(entity_id) is task:
             del self._send_tasks[entity_id]
 
     async def _async_send(
-        self, entity_id: str, kwargs: dict[str, Any], context: Context
+        self,
+        entity_id: str,
+        kwargs: dict[str, Any],
+        context: Context,
+        *,
+        serialized: bool = False,
     ) -> None:
         """Issue the `light.turn_on` call(s) for one member."""
         # Some bulbs drop one attribute when both arrive together; splitting
         # is pure I/O ordering, so it lives here rather than in adaptation.py.
-        if self._settings.separate_turn_on_commands:
+        delay = self._settings.send_split_delay
+        if serialized:
+            delay = kwargs[TRANSITION_KWARG] / 2
+            parts = [
+                {key: kwargs[key], TRANSITION_KWARG: delay}
+                for key in (COLOR_TEMP_KWARG, BRIGHTNESS_KWARG)
+            ]
+        elif self._settings.separate_turn_on_commands:
             shared = {
                 key: value for key, value in kwargs.items() if key == TRANSITION_KWARG
             }
@@ -682,8 +927,8 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         # needs a window long enough for its delayed second report; a one-part
         # command needs only its transition and reporting grace.
         transition_seconds = kwargs[TRANSITION_KWARG]
-        if len(parts) > 1:
-            transition_seconds += self._settings.send_split_delay
+        if len(parts) > 1 and not serialized:
+            transition_seconds += delay
         previous_suppress_until = self._target.record_command(
             entity_id,
             context.id,
@@ -692,13 +937,24 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         )
         for index, part in enumerate(parts):
             if index:
-                await asyncio.sleep(self._settings.send_split_delay)
+                await asyncio.sleep(delay)
+                if serialized:
+                    task = asyncio.current_task()
+                    if (
+                        task is None
+                        or task.cancelling()
+                        or self._send_tasks.get(entity_id) is not task
+                    ):
+                        return
                 if not self._can_send(entity_id):
                     return
             try:
-                await self._async_turn_on(entity_id, part, context)
+                if serialized:
+                    await self._async_turn_on(entity_id, part, context, blocking=True)
+                else:
+                    await self._async_turn_on(entity_id, part, context)
             except Exception:
-                if index == 0:
+                if index == 0 and not serialized:
                     self._target.discard_command(
                         entity_id, context.id, previous_suppress_until
                     )
@@ -717,8 +973,17 @@ class AdaptSwitch(CoordinatorEntity[DayCoordinator], SwitchEntity, RestoreEntity
         )
 
     async def _async_turn_on(
-        self, entity_id: str, data: dict[str, Any], context: Context
+        self,
+        entity_id: str,
+        data: dict[str, Any],
+        context: Context,
+        *,
+        blocking: bool = False,
     ) -> None:
         await self.hass.services.async_call(
-            "light", "turn_on", {"entity_id": entity_id, **data}, context=context
+            "light",
+            "turn_on",
+            {"entity_id": entity_id, **data},
+            context=context,
+            blocking=blocking,
         )

@@ -100,6 +100,56 @@ async def test_coordinator_tick_adapts_each_member_light(
     assert calls[0].data == {"entity_id": KITCHEN_LIGHT, **_STUB_KWARGS}
 
 
+@pytest.mark.parametrize(
+    ("configured_transition", "update_interval", "expected_transition"),
+    [(120.0, 15, 15.0), (4.0, 90, 4.0), (0.0, 15, 0.0)],
+)
+async def test_periodic_transition_is_capped_by_the_update_interval(
+    enable_custom_integrations,
+    hass,
+    hass_config_dir,
+    configured_transition,
+    update_interval,
+    expected_transition,
+) -> None:
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(transition=configured_transition)],
+        hub_data_overrides={"update_interval_seconds": update_interval},
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+
+    await _tick(hass, entry)
+
+    assert len(calls) == 1
+    assert calls[0].data["transition"] == expected_transition
+
+
+async def test_periodic_transition_cap_does_not_replace_the_configured_maximum(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(transition=120.0)],
+        hub_data_overrides={"update_interval_seconds": 15},
+    )
+    calls = async_mock_service(hass, "light", "turn_on")
+    await _turn_switch_on(hass)
+    calls.clear()
+
+    await _tick(hass, entry)
+    assert calls[-1].data["transition"] == 15.0
+
+    entry.runtime_data.update_interval = datetime.timedelta(seconds=180)
+    await _tick(hass, entry)
+
+    assert calls[-1].data["transition"] == 120.0
+
+
 async def test_onoff_only_light_receives_no_adaptation_command(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
@@ -534,7 +584,12 @@ async def test_turning_the_switch_on_adapts_every_on_member_at_once(
 async def test_switch_off_on_snaps_members_to_current_day_values(
     enable_custom_integrations, hass, hass_config_dir
 ) -> None:
-    entry = await _setup(hass, hass_config_dir, [_target_subentry()])
+    entry = await _setup(
+        hass,
+        hass_config_dir,
+        [_target_subentry(transition=120.0)],
+        hub_data_overrides={"update_interval_seconds": 15},
+    )
     calls = async_mock_service(hass, "light", "turn_on")
     await _turn_switch_on(hass)
     calls.clear()
