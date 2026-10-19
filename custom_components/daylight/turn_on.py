@@ -29,6 +29,22 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import entity_registry, service
 from homeassistant.helpers.group import IntegrationSpecificGroup, get_group_entities
 
+try:
+    from homeassistant.components.light.services import (
+        _async_handle_light_off_service,
+        _async_handle_light_on_service,
+        _async_handle_toggle_service,
+    )
+except ImportError:
+    # Older HA releases define these handlers inside light.async_setup instead.
+    _STOCK_LIGHT_HANDLERS: dict[str, Any] = {}
+else:
+    _STOCK_LIGHT_HANDLERS = {
+        "turn_on": _async_handle_light_on_service,
+        "turn_off": _async_handle_light_off_service,
+        "toggle": _async_handle_toggle_service,
+    }
+
 _LOGGER = logging.getLogger(__name__)
 _DATA_KEY = "daylight_turn_on_interceptor"
 _STOCK_ENTITY_SERVICE_CALL = service.entity_service_call
@@ -372,8 +388,13 @@ class TurnOnInterceptor:
         ):
             return False
         light_handler = getattr(target.args[2], "target", None)
+        # HA 2026.10 moved the stock handlers to module-level functions. Match
+        # identity, not metadata that a custom wrapper could preserve or copy.
+        if service_name in _STOCK_LIGHT_HANDLERS:
+            return light_handler is _STOCK_LIGHT_HANDLERS[service_name]
         return (
-            getattr(light_handler, "__module__", None)
+            not hasattr(light_handler, "__wrapped__")
+            and getattr(light_handler, "__module__", None)
             == "homeassistant.components.light"
             and getattr(light_handler, "__qualname__", "").endswith(
                 f"async_setup.<locals>.{handler_name}"

@@ -4,16 +4,18 @@ import asyncio
 import dataclasses
 import datetime
 import logging
+from functools import partial, wraps
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
 from homeassistant.components import light
-from homeassistant.core import Context, ServiceCall
+from homeassistant.core import Context, HassJob, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, Unauthorized
 from homeassistant.helpers import area_registry, entity_registry, service
 from homeassistant.helpers.entity_platform import EntityPlatform
 from homeassistant.helpers.group import IntegrationSpecificGroup
+from homeassistant.setup import async_setup_component
 from homeassistant.util import dt as dt_util
 
 from custom_components.daylight.turn_on import (
@@ -205,6 +207,92 @@ async def call(hass, service_name="turn_on", *, context=None, **params):
 
 def manual(switch):
     return switch._target.is_manual("light.kitchen", now=dt_util.utcnow().timestamp())
+
+
+@pytest.mark.parametrize("service_name", ["turn_on", "turn_off", "toggle"])
+async def test_stock_light_service_registration_is_supported(hass, service_name):
+    """Exercise HA's real registration, including its partial and HassJob."""
+    assert await async_setup_component(hass, "light", {})
+    interceptor = TurnOnInterceptor(hass)
+    entities = hass.data[light.DATA_COMPONENT]._entities
+    target = hass.services.async_services_internal()["light"][service_name].job.target
+    assert interceptor._uses_stock_light_dispatch(
+        entities, target.args[2], service_name
+    )
+
+
+@pytest.mark.parametrize("service_name", ["turn_on", "turn_off", "toggle"])
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "custom",
+        "wrapped",
+        "lookalike",
+        "wrong-service",
+        "string",
+        "unknown",
+        "wrapped-dispatch",
+        "wrong-hass",
+        "wrong-mapping",
+        "wrong-caller",
+        "not-partial",
+        "short-partial",
+        "missing-registration",
+    ],
+)
+async def test_unknown_light_service_registration_is_rejected(
+    hass, monkeypatch, service_name, replacement
+):
+    """Do not trust metadata, wrappers, or altered registration transport."""
+    assert await async_setup_component(hass, "light", {})
+    interceptor = TurnOnInterceptor(hass)
+    entities = hass.data[light.DATA_COMPONENT]._entities
+    registrations = hass.services.async_services_internal()["light"]
+    target = registrations[service_name].job.target
+    caller = target.args[2]
+    args = list(target.args)
+    dispatch = target.func
+
+    async def custom(*args, **kwargs):
+        pass
+
+    if replacement in ("custom", "wrapped", "lookalike", "string", "unknown"):
+        if replacement == "wrapped":
+            wraps(caller.target)(custom)
+        elif replacement == "lookalike":
+            custom.__module__ = "homeassistant.components.light.services"
+            custom.__qualname__ = f"_{caller.target.__name__.lstrip('_')}"
+        elif replacement == "unknown":
+            custom.__module__ = "homeassistant.components.light.services"
+            custom.__qualname__ = "_async_handle_future_service"
+        args[2] = "async_turn_on" if replacement == "string" else HassJob(custom)
+        caller = args[2]
+    elif replacement == "wrong-service":
+        other = "turn_off" if service_name == "turn_on" else "turn_on"
+        args[2] = caller = registrations[other].job.target.args[2]
+    elif replacement == "wrapped-dispatch":
+        dispatch = wraps(dispatch)(custom)
+    elif replacement == "wrong-hass":
+        args[0] = object()
+    elif replacement == "wrong-mapping":
+        args[1] = dict(entities)
+    elif replacement == "wrong-caller":
+        caller = HassJob(custom)
+    elif replacement == "short-partial":
+        args = args[:2]
+
+    altered = partial(dispatch, *args, **target.keywords)
+    if replacement == "not-partial":
+        altered = custom
+    monkeypatch.setitem(
+        registrations,
+        service_name,
+        SimpleNamespace(job=SimpleNamespace(target=altered)),
+    )
+    if replacement == "missing-registration":
+        monkeypatch.delitem(registrations, service_name)
+    assert not interceptor._uses_stock_light_dispatch(entities, caller, service_name)
+    assert not interceptor._uses_stock_light_dispatch(entities, caller, "unknown")
 
 
 @pytest.mark.parametrize(
@@ -949,7 +1037,7 @@ async def test_area_resolution_and_member_refresh(
 
 @pytest.mark.parametrize("groups_first", [True, False])
 async def test_zha_groups_keep_multicast_with_fresh_first_command(
-    enable_custom_integrations, hass, hass_config_dir, groups_first
+    enable_custom_integrations, hass, hass_config_dir, groups_first, caplog
 ):
     entry, switch, groups, leaves = await setup_multicast_lights(
         hass, hass_config_dir
@@ -987,6 +1075,7 @@ async def test_zha_groups_keep_multicast_with_fresh_first_command(
     )
     assert set(switch._receipts) == {leaf.entity_id for leaf in leaves}
     assert not switch._native_pending
+    assert "HA light service dispatch path is unsupported" not in caplog.text
 
     # Once the short receipts end, periodic adaptation remains leaf-based.
     for receipt in tuple(switch._receipts.values()):
@@ -1116,11 +1205,12 @@ async def test_batched_resolver_caller_never_filters_selected_leaves(
 
 
 async def test_zha_group_only_call_does_not_expand_authority(
-    enable_custom_integrations, hass, hass_config_dir
+    enable_custom_integrations, hass, hass_config_dir, caplog
 ):
     entry, switch, groups, leaves = await setup_multicast_lights(
         hass, hass_config_dir
     )
+    entry.runtime_data.async_set_updated_data(_STALE_DAY_STATE)
     with patch.object(
         entry.runtime_data, "compute_day_state", return_value=_DAY_STATE
     ) as fresh:
@@ -1139,6 +1229,7 @@ async def test_zha_group_only_call_does_not_expand_authority(
     assert groups[1].calls == []
     assert all(leaf.calls == [] for leaf in leaves)
     assert set(switch._receipts) == {leaf.entity_id for leaf in leaves[:3]}
+    assert "HA light service dispatch path is unsupported" not in caplog.text
 
 
 @pytest.mark.parametrize("service_name", ["turn_off", "toggle"])
