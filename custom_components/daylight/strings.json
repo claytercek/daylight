@@ -4,10 +4,8 @@
       "brightness_range_invalid": "Night brightness must not exceed day brightness.",
       "color_temp_range_invalid": "Night color temperature must not exceed daytime temperature.",
       "target_required": "Select at least one area or light.",
-      "unsupported_target": "Only areas and light entities are supported.",
-      "schedule_invalid": "This schedule conflicts on some dates. See the explanation below and keep editing."
+      "unsupported_target": "Only areas and light entities are supported."
     },
-    "abort": {"reconfigure_successful": "Schedule saved."},
     "step": {
       "user": {
         "title": "Choose your lights",
@@ -22,26 +20,78 @@
             "data_description": {"transition": "Maximum total fade for ongoing updates, capped by the hub update interval. With serialized native fades, this duration is divided equally between both phases. Turning on or resuming adaptation snaps instead. Subject to bulb support.", "adapt_only_on_state_change": "Skip periodic adaptation; still adapt when a light turns on or adaptation resumes.", "manual_control_reset_minutes": "0 disables automatic timed resumption.", "separate_turn_on_commands": "Send brightness and color temperature in separate commands.", "send_split_delay": "Delay, in seconds, between the brightness and color temperature commands.", "serialized_native_fades": "Periodic updates only. Splits the total capped fade equally into two non-overlapping native phases: temperature first, then brightness. Off by default; turn-on and resume snaps are unchanged."}
           }
         }
+      }
+    }
+  },
+  "options": {
+    "error": {"page_invalid": "Complete this setting to apply the page. To return instead, clear any invalid fields and select Return without changing this page. Earlier draft changes are kept.", "time_required": "Choose a local time to apply this page, or select Return without changing this page."},
+    "step": {
+      "init": {
+        "title": "Shared daily schedule",
+        "description": "This schedule applies to every target on this hub. Edit each target separately for its lights and night/day levels. Changes stay in a draft until you choose **Save changes**; cancel to discard them. [View the saved schedule](/daylight-preview); opening the preview leaves this form and does not show unsaved changes.",
+        "menu_options": {"daily_timing": "Daily timing", "transitions": "Transition duration and shape", "advanced": "Advanced settings", "save": "Save changes"}
       },
-      "reconfigure": {
-        "title": "Daily schedule",
-        "description": "Edit timing and curves here, then submit to save. Cancel to discard changes. Set a fixed local time only when choosing clock timing; offset and solar reference apply to sun-based timing. Individual endpoint rules override standard timing. [View the saved schedule](/daylight-preview) after saving. {detail}",
+      "daily_timing": {
+        "title": "Daily timing",
+        "description": "Choose what sets morning and evening timing. The next page shows only the controls for those choices. Individual transition overrides are edited under Advanced settings.",
+        "data": {"morning_mode": "Morning follows", "evening_mode": "Evening follows", "return_without_changes": "Return without changing this page"},
+        "data_description": {"return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "daily_details": {
+        "title": "Set daily timing",
+        "description": "Sun offsets: negative minutes move timing earlier; positive minutes move it later. A fixed morning time anchors the **start of the brightness transition**; a fixed evening time anchors its **finish**. Clock times use Home Assistant's local timezone. Continue to keep these changes in the draft.",
+        "data": {"morning_offset_minutes": "Minutes from sunrise", "evening_offset_minutes": "Minutes from sunset", "morning_time": "Morning brightness starts at", "evening_time": "Evening brightness finishes at", "evening_next_day": "Evening finishes on the following day", "return_without_changes": "Return without changing this page"},
+        "data_description": {"morning_offset_minutes": "-720 to +720 minutes. Negative = before sunrise; positive = after sunrise. Shifts both morning tracks.", "evening_offset_minutes": "-720 to +720 minutes. Negative = before sunset; positive = after sunset. Shifts both evening tracks.", "morning_time": "Local time in Home Assistant's timezone.", "evening_time": "Local time in Home Assistant's timezone.", "evening_next_day": "Use the next calendar day for an evening finish after midnight.", "return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "transitions": {
+        "title": "Transition duration and shape",
+        "description": "Duration is a multiplier: **1 = standard, 0.5 = half as long, 2 = twice as long**. It affects morning and evening together for that track. Durations still stretch and shrink with daylight, and common transitions shorten when needed to fit. Smooth eases in and out; Linear changes at a constant rate. These control the daily curve, not an individual bulb's update fade.",
+        "data": {"return_without_changes": "Return without changing this page"},
+        "data_description": {"return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."},
         "sections": {
-          "morning": {"name": "Morning timing", "data": {"mode": "Morning follows", "offset_minutes": "Solar offset (minutes)", "time": "Local time"}},
-          "evening": {"name": "Evening timing", "data": {"mode": "Evening follows", "offset_minutes": "Solar offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "lengths": {"name": "Transition lengths", "data": {"brightness_length": "Brightness transitions", "color_length": "Color transitions"}},
-          "shapes": {"name": "Transition shapes", "data": {"brightness_morning": "Morning brightness", "brightness_evening": "Evening brightness", "color_morning": "Morning color", "color_evening": "Evening color"}},
-          "runtime": {"name": "Update frequency", "data": {"update_interval_seconds": "Update interval (seconds)"}},
-          "brightness_morning_start": {"name": "Brightness: morning start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "brightness_morning_end": {"name": "Brightness: morning finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "brightness_evening_start": {"name": "Brightness: evening start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "brightness_evening_end": {"name": "Brightness: evening finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "color_morning_start": {"name": "Color: morning start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "color_morning_end": {"name": "Color: morning finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "color_evening_start": {"name": "Color: evening start", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "color_evening_end": {"name": "Color: evening finish", "data": {"kind": "Timing rule", "reference": "Solar reference", "offset_minutes": "Offset (minutes)", "time": "Local time", "next_day": "Following day"}},
-          "restore": {"name": "Restore standard timing", "data": {"confirm": "Replace custom timing"}}
+          "brightness": {"name": "Brightness", "data": {"length": "Duration multiplier", "morning_shape": "Morning shape", "evening_shape": "Evening shape"}, "data_description": {"length": "Duration multiplier from 0.25 to 3."}},
+          "color": {"name": "Color temperature", "data": {"length": "Duration multiplier", "morning_shape": "Morning shape", "evening_shape": "Evening shape"}, "data_description": {"length": "Duration multiplier from 0.25 to 3."}}
         }
+      },
+      "advanced": {
+        "title": "Advanced schedule settings",
+        "description": "Common timing is calculated first. Each individual override then replaces only its selected transition endpoint; other endpoints keep their common timing. Changes here remain in the draft until Save changes.",
+        "menu_options": {"endpoint": "Individual transition times", "runtime": "Update interval", "reset": "Reset timing defaults", "init": "Back to schedule settings"}
+      },
+      "endpoint": {
+        "title": "Individual transition times",
+        "description": "Choose one transition endpoint to edit. You can change several endpoints before saving; the complete schedule is checked only when you choose Save changes.",
+        "data": {"endpoint": "Transition endpoint", "return_without_changes": "Return without changing this page"},
+        "data_description": {"return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "endpoint_rule": {
+        "title": "Choose a timing rule",
+        "description": "Use common timing removes this endpoint's override. Otherwise, the next page shows only the fields for the selected rule.",
+        "data": {"kind": "Timing rule", "return_without_changes": "Return without changing this page"},
+        "data_description": {"return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "endpoint_details": {
+        "title": "Set the individual transition time",
+        "description": "Clock times use Home Assistant's timezone. Solar offsets are signed: negative = before the reference, positive = after it. **Seasonal reference date: {date}**, captured when you opened these settings. Seasonal minutes are measured on that date (the next date if Following day is checked), then stretch with daylight in other seasons. Continue to keep this endpoint in the draft.",
+        "data": {"time": "Local time", "reference": "Solar reference", "offset_minutes": "Offset (minutes; seasonal uses the reference date)", "next_day": "Following day", "return_without_changes": "Return without changing this page"},
+        "data_description": {"time": "Local time in Home Assistant's timezone.", "offset_minutes": "-1440 to +1440 minutes.", "next_day": "Use the next calendar day's clock time or solar reference.", "return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "runtime": {
+        "title": "Update interval",
+        "description": "How often Daylight applies the current curve to enabled targets. This is independent of the daily transition duration and shape. Continue to keep the interval in the draft.",
+        "data": {"update_interval_seconds": "Update interval (seconds)", "return_without_changes": "Return without changing this page"},
+        "data_description": {"update_interval_seconds": "1 to 3600 seconds.", "return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "reset": {
+        "title": "Reset timing defaults",
+        "description": "Confirmation resets common morning/evening timing, duration multipliers, and all individual endpoint overrides in this draft. It does **not** change transition shapes, update interval, or targets and their levels. Nothing is applied until Save changes. Leave unchecked to go back without resetting.",
+        "data": {"confirm": "Reset common timing and individual overrides", "return_without_changes": "Return without changing this page"},
+        "data_description": {"return_without_changes": "To return, clear any invalid fields, select Return without changing this page, then Next. Earlier draft changes are kept."}
+      },
+      "save_error": {
+        "title": "Schedule not saved",
+        "description": "The full-year check found a conflict: {detail}\n\nYour draft is still here and saved settings have not changed. Choose a page below to repair it, then Save changes again. Cancel discards the draft.",
+        "menu_options": {"daily_timing": "Edit daily timing", "transitions": "Edit transition duration and shape", "advanced": "Edit advanced settings", "save": "Try saving again"}
       }
     }
   },
@@ -78,6 +128,7 @@
     "shape": {"options": {"smooth": "Smooth", "linear": "Linear"}},
     "timing_mode": {"options": {"solar": "The sun", "clock": "A fixed time"}},
     "solar_reference": {"options": {"sunrise": "Sunrise", "sunset": "Sunset", "noon": "Solar noon", "midnight": "Solar midnight"}},
-    "endpoint_kind": {"options": {"standard": "Standard seasonal timing", "seasonal": "Solar offset that stretches with the season", "solar": "Solar offset in fixed minutes", "clock": "Fixed clock time"}}
+    "endpoint_kind": {"options": {"standard": "Use common timing (remove override)", "seasonal": "Solar offset that stretches with the season", "solar": "Solar offset in fixed minutes", "clock": "Fixed clock time"}},
+    "endpoint": {"options": {"brightness_morning_start": "Brightness: morning start", "brightness_morning_end": "Brightness: morning finish", "brightness_evening_start": "Brightness: evening start", "brightness_evening_end": "Brightness: evening finish", "color_morning_start": "Color temperature: morning start", "color_morning_end": "Color temperature: morning finish", "color_evening_start": "Color temperature: evening start", "color_evening_end": "Color temperature: evening finish"}}
   }
 }

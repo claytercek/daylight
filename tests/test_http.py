@@ -29,7 +29,8 @@ async def preview(hass, enable_custom_integrations, hass_config_dir, hass_client
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Daylight",
-        data=default_hub_data(),
+        data={},
+        options=default_hub_data(),
         version=2,
         subentries_data=[
             _target_subentry(
@@ -77,11 +78,11 @@ async def test_catalog_lists_saved_targets_and_home_assistant_local_date(preview
 
 async def test_saved_curve_matches_runtime_and_does_not_mutate_settings(hass, preview):
     client, entry = preview
-    original = deepcopy(dict(entry.data))
+    original = deepcopy(dict(entry.options))
     response = await client.post(URL, json=payload(entry, num_points=97))
     assert response.status == 200
     data = await response.json()
-    coordinator = DayCoordinator(hass, await async_schedule(hass, entry.data))
+    coordinator = DayCoordinator(hass, await async_schedule(hass, entry.options))
     assert len(data["points"]) == 97
     for point in data["points"]:
         state = coordinator.compute_day_state(datetime.fromisoformat(point["utc_time"]))
@@ -89,14 +90,17 @@ async def test_saved_curve_matches_runtime_and_does_not_mutate_settings(hass, pr
         assert point["color_temp_kelvin"] == round(2500 + 1500 * state.color_factor)
     assert data["timezone"] == "America/New_York"
     assert not data["timing"]["polar_fallback"]
-    assert entry.data == original
+    assert entry.options == original
+    assert entry.data == {}
 
 
 async def test_reads_newly_saved_settings_not_a_client_copy(hass, preview):
     client, entry = preview
-    data = deepcopy(dict(entry.data))
-    data["schedule"]["basic"].update(morning_time="09:00:00", evening_time="11:00:00")
-    hass.config_entries.async_update_entry(entry, data=data)
+    options = deepcopy(dict(entry.options))
+    options["schedule"]["basic"].update(
+        morning_time="09:00:00", evening_time="11:00:00"
+    )
+    hass.config_entries.async_update_entry(entry, options=options)
     response = await client.post(URL, json=payload(entry))
     body = await response.json()
     assert body["timing"]["compressed"] is True
@@ -131,7 +135,8 @@ async def test_target_cannot_be_borrowed_from_another_hub(hass, preview):
     client, entry = preview
     other = MockConfigEntry(
         domain=DOMAIN,
-        data=default_hub_data(),
+        data={},
+        options=default_hub_data(),
         version=2,
         subentries_data=[_target_subentry("Other")],
     )
@@ -144,7 +149,7 @@ async def test_target_cannot_be_borrowed_from_another_hub(hass, preview):
 
 async def test_unrelated_integration_is_not_a_preview_target(hass, preview):
     client, entry = preview
-    other = MockConfigEntry(domain="other", data=default_hub_data())
+    other = MockConfigEntry(domain="other", data={}, options=default_hub_data())
     other.add_to_hass(hass)
     response = await client.post(URL, json=payload(entry, entry_id=other.entry_id))
     assert response.status == 404
@@ -152,9 +157,9 @@ async def test_unrelated_integration_is_not_a_preview_target(hass, preview):
 
 async def test_invalid_saved_curve_returns_a_useful_error(hass, preview):
     client, entry = preview
-    data = deepcopy(dict(entry.data))
-    data["schedule"]["basic"]["morning_time"] = "23:00:00"
-    hass.config_entries.async_update_entry(entry, data=data)
+    options = deepcopy(dict(entry.options))
+    options["schedule"]["basic"]["morning_time"] = "23:00:00"
+    hass.config_entries.async_update_entry(entry, options=options)
     response = await client.post(URL, json=payload(entry))
     assert response.status == 400
     assert "evening occurs before morning" in (await response.json())["message"]

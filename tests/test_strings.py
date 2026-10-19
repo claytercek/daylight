@@ -9,11 +9,23 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 import voluptuous as vol
 from homeassistant.data_entry_flow import section
 
 from custom_components.daylight.config import TARGET_SCHEMA
-from custom_components.daylight.schedule_config import SCHEDULE_SCHEMA
+from custom_components.daylight.schedule import ENDPOINTS
+from custom_components.daylight.schedule_config import (
+    ENDPOINT_KIND_SCHEMA,
+    ENDPOINT_SELECT_SCHEMA,
+    RESET_SCHEMA,
+    RUNTIME_SCHEMA,
+    TIMING_MODES_SCHEMA,
+    TRANSITIONS_SCHEMA,
+    daily_timing_schema,
+    editor_schema,
+    endpoint_timing_schema,
+)
 
 _COMPONENT_DIR = Path(__file__).parent.parent / "custom_components" / "daylight"
 _STRINGS_PATH = _COMPONENT_DIR / "strings.json"
@@ -51,9 +63,66 @@ def test_hub_schema_fields_have_strings() -> None:
     )
 
 
-def test_schedule_form_has_strings() -> None:
-    step = json.loads(_STRINGS_PATH.read_text())["config"]["step"]["reconfigure"]
-    _assert_step_has_strings(SCHEDULE_SCHEMA, step, "config.step.reconfigure")
+@pytest.mark.parametrize(
+    "step_id,schema",
+    [
+        ("daily_timing", TIMING_MODES_SCHEMA),
+        ("transitions", TRANSITIONS_SCHEMA),
+        ("endpoint", ENDPOINT_SELECT_SCHEMA),
+        ("endpoint_rule", ENDPOINT_KIND_SCHEMA),
+        ("runtime", RUNTIME_SCHEMA),
+        ("reset", RESET_SCHEMA),
+        *[
+            (
+                "daily_details",
+                daily_timing_schema({"morning_mode": morning, "evening_mode": evening}),
+            )
+            for morning in ("solar", "clock")
+            for evening in ("solar", "clock")
+        ],
+        *[
+            ("endpoint_details", endpoint_timing_schema(kind))
+            for kind in ("clock", "solar", "seasonal")
+        ],
+    ],
+)
+def test_schedule_forms_have_strings(step_id, schema) -> None:
+    steps = json.loads(_STRINGS_PATH.read_text())["options"]["step"]
+    _assert_step_has_strings(
+        editor_schema(schema), steps[step_id], f"options.step.{step_id}"
+    )
+    assert steps[step_id]["data"]["return_without_changes"] == (
+        "Return without changing this page"
+    )
+    assert steps[step_id]["data_description"]["return_without_changes"] == (
+        "To return, clear any invalid fields, select Return without changing "
+        "this page, then Next. Earlier draft changes are kept."
+    )
+
+
+@pytest.mark.parametrize(
+    "step_id,choices",
+    [
+        ("init", {"daily_timing", "transitions", "advanced", "save"}),
+        ("advanced", {"endpoint", "runtime", "reset", "init"}),
+        ("save_error", {"daily_timing", "transitions", "advanced", "save"}),
+    ],
+)
+def test_schedule_menus_have_strings(step_id, choices) -> None:
+    steps = json.loads(_STRINGS_PATH.read_text())["options"]["step"]
+    assert set(steps[step_id]["menu_options"]) == choices
+
+
+def test_schedule_selectors_and_guidance_have_strings() -> None:
+    strings = json.loads(_STRINGS_PATH.read_text())
+    assert set(strings["selector"]["endpoint"]["options"]) == set(ENDPOINTS)
+    steps = strings["options"]["step"]
+    assert "{date}" in steps["endpoint_details"]["description"]
+    assert "{detail}" in steps["save_error"]["description"]
+    assert "Save changes" in steps["init"]["description"]
+    assert "draft" in steps["reset"]["description"]
+    assert "reconfigure" not in strings["config"]["step"]
+    assert {"page_invalid", "time_required"} <= strings["options"]["error"].keys()
 
 
 def test_target_schema_fields_have_strings() -> None:

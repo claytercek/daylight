@@ -55,7 +55,7 @@ class PreviewTargetsView(HomeAssistantView):
                 "name": f"{entry.title}: {target.title}",
             }
             for entry in hass.config_entries.async_entries(DOMAIN)
-            if "schedule" in entry.data
+            if "schedule" in entry.options
             for target in entry.subentries.values()
             if target.subentry_type == "target"
         ]
@@ -78,14 +78,14 @@ class SampleCurveView(HomeAssistantView):
     async def post(self, request: web.Request, data: dict[str, Any]) -> web.Response:
         hass = request.app[KEY_HASS]
         entry = hass.config_entries.async_get_entry(data["entry_id"])
-        if entry is None or entry.domain != DOMAIN or "schedule" not in entry.data:
+        if entry is None or entry.domain != DOMAIN or "schedule" not in entry.options:
             return self.json_message("Daylight hub not found.", HTTPStatus.NOT_FOUND)
         target = entry.subentries.get(data["target_id"])
         if target is None or target.subentry_type != "target":
             return self.json_message(
                 "Target not found on this hub.", HTTPStatus.NOT_FOUND
             )
-        schedule = await async_schedule(hass, entry.data)
+        schedule = await async_schedule(hass, entry.options)
         day = (
             data.get("date")
             or dt_util.utcnow().astimezone(schedule.sun.timezone).date()

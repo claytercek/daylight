@@ -11,7 +11,9 @@ import datetime
 from unittest.mock import AsyncMock, patch
 
 import astral
+import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daylight.const import DOMAIN
@@ -19,13 +21,13 @@ from custom_components.daylight.coordinator import DayCoordinator
 from custom_components.daylight.schedule import Schedule
 from custom_components.daylight.schedule_config import default_hub_data
 
-_HUB_DATA = default_hub_data()
-_HUB_DATA["update_interval_seconds"] = 45
-_HUB_DATA["schedule"]["basic"].update(
+_HUB_OPTIONS = default_hub_data()
+_HUB_OPTIONS["update_interval_seconds"] = 45
+_HUB_OPTIONS["schedule"]["basic"].update(
     morning_time="06:30:00",
     evening_offset_minutes=-5,
 )
-_HUB_DATA["schedule"]["shapes"]["brightness_morning"] = "linear"
+_HUB_OPTIONS["schedule"]["shapes"]["brightness_morning"] = "linear"
 
 
 async def _setup_entry(
@@ -37,7 +39,9 @@ async def _setup_entry(
     hass.config.elevation = 10
     await hass.config.async_set_time_zone("America/New_York")
 
-    entry = MockConfigEntry(domain=DOMAIN, title="Test Hub", data=_HUB_DATA, version=2)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Test Hub", data={}, options=_HUB_OPTIONS, version=2
+    )
     entry.add_to_hass(hass)
 
     assert await hass.config_entries.async_setup(entry.entry_id)
@@ -116,7 +120,7 @@ async def test_async_setup_entry_reloads_on_update_listener(
         hass.config_entries, "async_reload", AsyncMock(return_value=True)
     ) as mock_reload:
         hass.config_entries.async_update_entry(
-            entry, data={**entry.data, "update_interval_seconds": 99}
+            entry, options={**entry.options, "update_interval_seconds": 99}
         )
         await hass.async_block_till_done()
 
@@ -143,22 +147,149 @@ async def test_saved_native_draft_reloads_the_live_schedule(
 ) -> None:
     entry = await _setup_entry(hass, enable_custom_integrations, hass_config_dir)
     previous = entry.runtime_data
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": "reconfigure", "entry_id": entry.entry_id},
-    )
-    assert result["step_id"] == "reconfigure"
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["step_id"] == "init"
     assert entry.runtime_data is previous
     assert previous.schedule.basic.morning_time == datetime.time(6, 30)
-    await hass.config_entries.flow.async_configure(
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input={"next_step_id": "daily_timing"}
+    )
+    result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        user_input={"morning": {"mode": "clock", "time": "07:30:00"}},
+        user_input={"morning_mode": "clock", "evening_mode": "solar"},
+    )
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={"morning_time": "07:30:00", "evening_offset_minutes": -5},
     )
     await hass.async_block_till_done()
+    assert entry.runtime_data is previous
+    assert previous.schedule.basic.morning_time == datetime.time(6, 30)
+    with patch.object(
+        hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload
+    ) as reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"next_step_id": "save"}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    reload.assert_called_once_with(entry.entry_id)
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data is not previous
     assert entry.runtime_data.schedule.basic.morning_time == datetime.time(7, 30)
     assert entry.runtime_data.schedule.shapes["brightness_morning"] == "linear"
+    assert entry.data == {}
+
+
+async def test_no_op_options_save_does_not_reload(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup_entry(hass, enable_custom_integrations, hass_config_dir)
+    previous = entry.runtime_data
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    with patch.object(
+        hass.config_entries, "async_reload", AsyncMock(return_value=True)
+    ) as reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"next_step_id": "save"}
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    reload.assert_not_called()
+    assert entry.runtime_data is previous
+
+
+async def test_page_returns_keep_staged_interval_without_reloading_until_save(
+    enable_custom_integrations, hass, hass_config_dir
+) -> None:
+    entry = await _setup_entry(hass, enable_custom_integrations, hass_config_dir)
+    previous = entry.runtime_data
+    original = dict(entry.options)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    flow_id = result["flow_id"]
+
+    async def configure(**user_input):
+        return await hass.config_entries.options.async_configure(
+            flow_id, user_input=user_input
+        )
+
+    with patch.object(
+        hass.config_entries, "async_reload", wraps=hass.config_entries.async_reload
+    ) as reload:
+        await configure(next_step_id="advanced")
+        await configure(next_step_id="runtime")
+        await configure(update_interval_seconds=60)
+        await configure(next_step_id="runtime")
+        result = await configure(
+            update_interval_seconds=None, return_without_changes=True
+        )
+        assert result["step_id"] == "advanced"
+        await configure(next_step_id="init")
+        await configure(next_step_id="daily_timing")
+        result = await configure(morning_mode="clock", evening_mode="clock")
+        assert "evening_time" not in {
+            str(key)
+            for key in result["data_schema"].schema
+            if (key.description or {}).get("suggested_value")
+        }
+        result = await configure(
+            return_without_changes=True, morning_time=None, evening_time=""
+        )
+        assert result["step_id"] == "init"
+        await configure(next_step_id="advanced")
+        await configure(next_step_id="endpoint")
+        await configure(endpoint="color_morning_end")
+        await configure(kind="clock")
+        result = await configure(return_without_changes=True, time="")
+        assert result["step_id"] == "advanced"
+        await hass.async_block_till_done()
+        reload.assert_not_called()
+        assert entry.runtime_data is previous
+        assert entry.options == original
+        await configure(next_step_id="init")
+        result = await configure(next_step_id="save")
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    reload.assert_called_once_with(entry.entry_id)
+    assert entry.runtime_data.update_interval == datetime.timedelta(seconds=60)
+    assert entry.runtime_data.schedule.basic == previous.schedule.basic
+    assert entry.options["schedule"] == original["schedule"]
+    assert entry.options["update_interval_seconds"] == 60
+    assert "return_without_changes" not in entry.options
+
+
+@pytest.mark.parametrize("save_invalid", [False, True])
+async def test_cancel_or_invalid_save_leaves_live_schedule_unchanged(
+    enable_custom_integrations, hass, hass_config_dir, save_invalid
+) -> None:
+    entry = await _setup_entry(hass, enable_custom_integrations, hass_config_dir)
+    previous = entry.runtime_data
+    original = dict(entry.options)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    with patch.object(
+        hass.config_entries, "async_reload", AsyncMock(return_value=True)
+    ) as reload:
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"next_step_id": "daily_timing"}
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={"morning_mode": "clock", "evening_mode": "solar"},
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            user_input={"morning_time": "23:00:00", "evening_offset_minutes": -5},
+        )
+        if save_invalid:
+            result = await hass.config_entries.options.async_configure(
+                result["flow_id"], user_input={"next_step_id": "save"}
+            )
+            assert result["step_id"] == "save_error"
+        hass.config_entries.options.async_abort(result["flow_id"])
+        await hass.async_block_till_done()
+    reload.assert_not_called()
+    assert entry.options == original
+    assert entry.runtime_data is previous
 
 
 async def test_async_unload_entry(

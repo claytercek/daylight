@@ -46,10 +46,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up a daylight hub entry: build its coordinator, forward platforms."""
-    data = entry.data
-    schedule = await async_schedule(hass, data)
+    options = entry.options
+    schedule = await async_schedule(hass, options)
 
-    update_interval = datetime.timedelta(seconds=data["update_interval_seconds"])
+    update_interval = datetime.timedelta(seconds=options["update_interval_seconds"])
     coordinator = DayCoordinator(hass, schedule, update_interval, name=entry.title)
     await coordinator.async_config_entry_first_refresh()
 

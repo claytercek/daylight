@@ -93,7 +93,8 @@ async def _setup(
         domain=DOMAIN,
         title="Test Hub",
         version=2,
-        data={**_HUB_DATA, **(hub_data_overrides or {})},
+        data={},
+        options={**_HUB_DATA, **(hub_data_overrides or {})},
         subentries_data=subentries,
     )
     entry.add_to_hass(hass)

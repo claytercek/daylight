@@ -32,7 +32,13 @@ A light group selected directly (as an entity) is treated as one light: commands
 
 ## Change the daily schedule
 
-All editing lives in **Settings → Devices & services → Daylight**. Use the hub entry's **Reconfigure** action for shared timing, or edit a target for its lights and night/day levels.
+All editing lives in **Settings → Devices & services → Daylight**. Open the hub entry's **Configure** (options) action for the shared schedule, or edit a target for its lights and night/day levels. The shared schedule applies to every target on that hub.
+
+The schedule options menu has **Daily timing**, **Transition duration and shape**, **Advanced settings**, and **Save changes**. Changes on each page stay in a draft; choose **Save changes** to apply them together. Cancel discards the entire draft. Saving checks a full year of timing and reports an example date if rules conflict, with menu choices to return to the editors and repair the draft. Targets save separately.
+
+Every schedule editor has **Return without changing this page**. To return, clear any invalid fields, select **Return without changing this page**, then **Next**. Only this page's edits are discarded; earlier draft changes are kept. Native time pickers and number controls retain their ranges and may block Next until invalid values are cleared. Fields are optional for returning, so you do not need to invent a valid value. Leave the return checkbox unchecked to apply the page to the draft, with its required fields and ranges checked. Closing the whole dialog still discards the entire draft.
+
+**Breaking settings change:** shared settings now live in Home Assistant's config-entry options. There is no migration from the previous hub data format. Delete and recreate an existing Daylight entry when upgrading from that format, then add its targets again.
 
 The schedule holds steady day and night levels, with separate morning and evening transitions for brightness and color. On a day with twelve hours of daylight:
 
@@ -46,27 +52,29 @@ Transitions stretch with longer days and shrink with shorter days. Brightness tr
 Basic settings let you:
 
 - Move morning or evening earlier/later relative to the sun, shifting both tracks together.
-- **Start mornings at** a fixed time, or **finish evenings by** a fixed time. Select **Following day** explicitly for an evening ending after midnight.
-- Make brightness or color transitions shorter/longer. Each control adjusts that track's morning and evening lengths together; the lengths continue to vary seasonally.
+- Set a fixed local time for the **start of the morning brightness transition**, or the **finish of the evening brightness transition**. Select **Following day** explicitly for an evening ending after midnight.
+- Make brightness or color-temperature transitions shorter/longer. A duration multiplier of **1** is standard, **0.5** is half as long, and **2** is twice as long. Each control adjusts that track's morning and evening lengths together; the lengths continue to vary seasonally.
 
 Basic schedules automatically shorten transitions when necessary to fit the available time. They never silently swap morning and evening.
 
-Open the collapsed sections on the hub's Reconfigure form to edit timing, shapes, or update frequency. **Submit** saves all changes together; cancel discards them. Saving checks a full year of seasonal timing and reports an example date if rules conflict. Target level forms save independently when submitted.
+Under **Daily timing**, choose sun-based or fixed-time timing first. The next page shows only the applicable controls. For sun offsets, negative minutes mean earlier and positive minutes mean later. **Transition duration and shape** groups the duration multiplier and both transition shapes separately for brightness and color temperature. Update frequency lives under **Advanced settings**.
 
 ### Advanced timing
 
-Each track has four collapsed endpoint sections on the same form: morning start/finish and evening start/finish. There are no additional points or curve handles.
+Under **Advanced settings → Individual transition times**, each track has four endpoints: morning start/finish and evening start/finish. There are no additional points or curve handles.
 
-Open an endpoint section and select its timing rule:
+Choose an endpoint, then its timing rule. Only the fields needed for that rule are shown:
 
-- **Standard:** keep its automatically fitted timing, or remove an existing override.
-- **Seasonal solar offset:** enter an offset in minutes for the current date. It stretches with daylight in other seasons.
+- **Use common timing:** keep its automatically fitted timing, or remove an existing override.
+- **Seasonal solar offset:** enter an offset in minutes for the local reference date shown in the editor, captured when the options flow opens. It stretches with daylight in other seasons. Following-day rules use the next date for this conversion.
 - **Fixed-minute solar offset:** stay the same number of minutes before/after sunrise, sunset, solar noon or solar midnight.
 - **Clock time:** use an exact local time, optionally on the following day.
 
-Custom rules are exact: overlapping transitions or conflicting order are rejected, not moved to fit. Unchanged endpoints keep their standard rules. While any endpoint override exists, basic timing adjustments remain saved but do not affect the curve. **Restore standard timing** replaces overrides and basic timing adjustments without changing target ranges or transition shapes when you submit the form.
+Common timing is calculated and fitted first; each override then replaces **only its selected endpoint**. Other endpoints still follow common timing and duration settings. Custom rules are exact: overlapping transitions or conflicting order are rejected, not moved to fit. Edit paired endpoints freely in the draft; the complete schedule is validated only on **Save changes**.
 
-Each transition can be **Smooth** (smoothstep, gently starting and finishing) or **Linear**. Changing shape does not change timing. Shape-only edits leave basic timing controls available.
+**Advanced settings → Reset timing defaults** requires confirmation and resets common timing, duration multipliers, and endpoint overrides in the draft. It leaves transition shapes, update interval, and target settings alone. Choose **Save changes** to apply the reset, or cancel to discard it.
+
+Each transition can be **Smooth** (smoothstep, gently starting and finishing) or **Linear** (constant-rate change). Changing shape does not change timing.
 
 ### Polar regions and clock changes
 
